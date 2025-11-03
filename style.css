@@ -1,0 +1,345 @@
+/* ================================================================== */
+/* TEMA PERSONALIZADO STREAMLIT - CÓDIGO COMPLETO E FINAL */
+/* Inclui todas as solicitações: Cores, Componentes, Scrollbar, HTML/Body e seletores de cache. */
+/* SCROLLBARS GARANTIDAS COMO OPACOS (SEM TRANSPARÊNCIA) */
+/* ================================================================== */
+
+/* Paleta de Cores: */
+/* Fundo Principal (Amarelo-claro): #FFFFE0 */
+/* Inputs/Hover/Containers de Destaque (Amarelo-claro Pálido): #FFFACD */
+/* Destaque/Bordas/Títulos/Scrollbar Thumb (Vermelho-vinho): #800020 */
+/* Texto Padrão (Cinza-escuro): #36454F */
+
+
+/* ------------------------------------------------------------------ */
+/* FUNDO E TEXTO GERAL */
+/* ------------------------------------------------------------------ */
+
+/* Cor de fundo para a página inteira, cobrindo HTML, BODY e o container principal do Streamlit (Amarelo-claro) */
+html, body, .stApp {
+    background-color: #FFFFE0 !important;
+}
+
+/* Cor de texto padrão (Cinza-escuro) */
+.stApp, .stApp p, .stApp span, .stApp div {
+    color: #36454F;
+}
+
+/* Cores de títulos, subtítulos e texto em negrito (Vermelho-vinho) */
+h1, h2, h3, h4, h5, h6, strong, b, .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {
+    color: #800020;
+}
+
+/* Seletores de Cache e Status (Fundo Amarelo-claro Pálido para destaque) */
+.st-emotion-cache-hzygls,
+.st-emotion-cache-4man113,
+div[data-testid="stStatusContainer"],
+div[data-testid="stCacheContainer"] { 
+    background-color: #FFFACD !important;
+    color: #36454F !important;
+    padding: 5px;
+    border-radius: 3px;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* SCROLLBAR (BARRA DE ROLAGEM) - OPACA */
+/* ------------------------------------------------------------------ */
+
+/* 1. Largura da barra de rolagem (WebKit - Chrome/Edge/Safari) */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+/* 2. Track (o "caminho" da barra de rolagem) - OPACA */
+::-webkit-scrollbar-track {
+    background: #FFFACD; /* Amarelo-claro Pálido (OPACO) */
+    border-radius: 10px;
+}
+
+/* 3. Thumb (a "alça" móvel da barra - Vermelho-vinho) - OPACA */
+::-webkit-scrollbar-thumb {
+    background: #800020; /* Vermelho-vinho (OPACO) */
+    border-radius: 10px;
+}
+
+/* 4. Thumb no Hover (Amarelo-claro Pálido) - OPACA */
+::-webkit-scrollbar-thumb:hover {
+    background: #FFFACD; /* Amarelo-claro Pálido (OPACO) */
+}
+
+/* 5. Suporte para Firefox (thumb e track) - OPACA */
+* {
+    /* Thumb Vermelho-vinho (OPACO), Track Amarelo-claro Pálido (OPACO) */
+    scrollbar-color: #800020 #FFFACD; 
+    scrollbar-width: thin; 
+}
+
+/* 6. Adição do comando de hover (para Firefox) - OPACA */
+*::-moz-scrollbar-thumb:hover { 
+    background: #FFFACD; /* Amarelo-claro Pálido no hover do Thumb (OPACO) */
+}
+
+
+/* ------------------------------------------------------------------ */
+/* BARRA SUPERIOR, SIDEBAR, E RODAPÉ */
+/* ------------------------------------------------------------------ */
+
+/* CABEÇALHO (Barra superior) */
+header,
+header.st-emotion-cache-18nibws, 
+header.st-emotion-cache-1rq341t, 
+header.st-emotion-cache-1l02z8d,
+div[data-testid="stHeader"] {
+    background-color: #FFFFE0 !important;
+}
+
+/* RODAPÉ (Footer) */
+footer,
+div[data-testid="stFooter"] {
+    background-color: #FFFFE0 !important;
+    color: #36454F !important;
+}
+footer a,
+div[data-testid="stFooter"] a {
+    color: #800020 !important;
+}
+
+/* SIDEBAR (Barra de Navegação) */
+.stSidebar,
+.stSidebar > div:first-child,
+div[data-testid="stSidebar"] { 
+    background-color: #FFFFE0 !important;
+}
+.stSidebar .stMarkdown, .stSidebar .stSelectbox label,
+.stSidebar p, .stSidebar span { 
+    color: #36454F !important;
+}
+
+/* LINKS DE NAVEGAÇÃO NA BARRA LATERAL */
+.stSidebar nav ul li a, .stSidebar nav ul li div[role="button"],
+div[data-testid="stVerticalNav"] li a {
+    background-color: #FFFFE0 !important;
+    color: #36454F !important;
+}
+.stSidebar nav ul li a:hover, .stSidebar nav ul li div[role="button"]:hover,
+div[data-testid="stVerticalNav"] li a:hover {
+    background-color: #FFFACD !important;
+    color: #800020 !important;
+}
+.stSidebar nav ul li a[aria-current="page"], .stSidebar nav ul li div[aria-selected="true"],
+div[data-testid="stVerticalNav"] li a[aria-current="page"] {
+    background-color: #FFFACD !important;
+    color: #800020 !important;
+    font-weight: bold;
+}
+
+/* Menu Principal (Menu Hambúrguer) */
+div[data-testid="stMainMenu"] {
+    background-color: #FFFFE0 !important;
+}
+div[data-testid="stMainMenu"] button, div[data-testid="stMainMenu"] div {
+    color: #36454F !important;
+    background-color: #FFFFE0 !important;
+}
+div[data-testid="stMainMenu"] button:hover, div[data-testid="stMainMenu"] div:hover {
+    background-color: #FFFACD !important;
+    color: #800020 !important;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* FORMULÁRIOS E INPUTS */
+/* ------------------------------------------------------------------ */
+
+/* FORMULÁRIOS (st.form) */
+.stForm {
+    background-color: #FFFFE0;
+    border: 1px solid #FFFACD;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+/* INPUTS DE TEXTO GERAIS (Cobre: st.text_input, st.number_input, st.date_input, st.text_area, st.selectbox) */
+.stTextInput>div>div>input,
+.stNumberInput>div>div>input,
+.stDateInput>div>div>input,
+.stTextArea>div>div>textarea,
+.stSelectbox div[data-baseweb="select"] div[role="button"],
+.stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea, 
+div[data-testid="stSelectbox"] div[role="button"] { 
+    background-color: #FFFACD !important; /* Amarelo-claro Pálido */
+    color: #36454F !important;
+    border-color: #800020 !important;
+    
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    -webkit-transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Foco nos Inputs - Suporte Cross-Browser para Focus Ring! */
+.stTextInput>div>div>input:focus,
+.stNumberInput>div>div>input:focus,
+.stDateInput>div>div>input:focus,
+.stTextArea>div>div>textarea:focus,
+.stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus, .stTextArea textarea:focus {
+    border-color: #800020 !important;
+    
+    -webkit-box-shadow: 0 0 0 1px #800020 !important;
+    -moz-box-shadow: 0 0 0 1px #800020 !important;
+    box-shadow: 0 0 0 1px #800020 !important;
+    
+    outline: none !important; 
+}
+
+/* CHAT INPUT (st.chat_input) */
+.stChatInputContainer,
+div[data-testid="stChatInput"] {
+    background-color: #FFFFE0 !important;
+    border-top: 1px solid #FFFACD;
+    padding: 10px 0;
+}
+.stChatInputContainer input,
+div[data-testid="stChatInput"] input {
+    background-color: #FFFACD !important;
+    color: #36454F !important;
+    border-color: #800020 !important;
+}
+.stChatInputContainer button svg,
+div[data-testid="stChatInput"] button svg {
+    fill: #800020 !important;
+}
+.stChatInputContainer button,
+div[data-testid="stChatInput"] button {
+    background-color: #FFFACD !important;
+    border-color: #800020 !important;
+}
+.stChatInputContainer button:hover,
+div[data-testid="stChatInput"] button:hover {
+    background-color: #FFFFE0 !important;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* CONTROLES DE SELEÇÃO E OUTROS WIDGETS */
+/* ------------------------------------------------------------------ */
+
+/* BOTÕES (st.button) */
+.stButton>button,
+div[data-testid="baseButton-secondary"] button {
+    background-color: #FFFACD;
+    color: #800020;
+    border-color: #800020;
+    
+    -webkit-transition: all 0.2s ease-in-out;
+    transition: all 0.2s ease-in-out;
+}
+.stButton>button:hover,
+div[data-testid="baseButton-secondary"] button:hover {
+    background-color: #FFFFE0;
+    color: #800020;
+    border-color: #800020;
+}
+
+/* MENU DE OPÇÃO DE SELEÇÃO (DROPDOWN/POPOVER) */
+div[data-baseweb="popover"] {
+    background-color: #FFFFE0 !important; /* Amarelo Claro (OPACO) */
+    border: 1px solid #800020 !important;
+    box-shadow: none !important; 
+    -webkit-box-shadow: none !important; 
+    -moz-box-shadow: none !important; 
+}
+
+/* FUNÇÃO OPTION (Itens do Dropdown) */
+div[data-baseweb="popover"] ul, 
+div[data-baseweb="popover"] li,
+div[data-testid="stSelectbox"] ul, 
+div[data-testid="stSelectbox"] li,
+div[data-baseweb="popover"] [role="option"] {
+    background-color: #FFFFE0 !important; /* Amarelo-claro (OPACO) */
+    color: #36454F !important;
+}
+
+/* Opções ao Passar o Mouse (Hover) */
+div[data-baseweb="popover"] li:hover,
+div[data-testid="stSelectbox"] li:hover,
+div[data-baseweb="popover"] [role="option"]:hover {
+    background-color: #FFFACD !important; /* Amarelo-claro Pálido (OPACO) */
+    color: #800020 !important;
+}
+
+/* Opções Selecionadas/Ativas no Multiselect */
+div[data-baseweb="popover"] li[aria-selected="true"],
+div[data-baseweb="popover"] li[data-baseweb="menu-option"][aria-selected="true"],
+div[data-baseweb="popover"] [role="option"][aria-selected="true"] {
+    background-color: #FFFACD !important; /* Amarelo-claro Pálido (OPACO) */
+    color: #800020 !important; 
+    font-weight: bold;
+}
+
+
+/* CHECKBOX E RADIO BUTTON */
+.stCheckbox input[type="checkbox"], .stRadio input[type="radio"],
+.stCheckbox > label > div > input[type="checkbox"], 
+.stRadio > label > div > input[type="radio"] {
+    background-color: #FFFACD !important;
+    border-color: #800020 !important;
+    
+    -webkit-appearance: none; 
+    -moz-appearance: none;
+    appearance: none;
+    
+    width: 1em; 
+    height: 1em;
+    border-radius: 50%;
+}
+.stCheckbox input[type="checkbox"], .stCheckbox > label > div > input[type="checkbox"] {
+    border-radius: 3px !important; 
+}
+.stRadio input[type="radio"], .stRadio > label > div > input[type="radio"] {
+    border-radius: 50% !important; 
+}
+
+.stCheckbox input[type="checkbox"]:checked, .stRadio input[type="radio"]:checked { 
+    background-color: #FFFFE0 !important;
+    border-color: #800020 !important;
+}
+
+/* Marca de seleção (o 'tick' ou ponto) */
+.stCheckbox input[type="checkbox"]:checked:after, 
+.stRadio input[type="radio"]:checked:after,
+.stCheckbox > label > div > input[type="checkbox"]:checked:after,
+.stRadio > label > div > input[type="radio"]:checked:after {
+    content: '';
+    display: block;
+    position: absolute;
+    top: 50%; 
+    left: 50%;
+    transform: translate(-50%, -50%);
+    
+    background-color: #800020 !important;
+    width: 6px; 
+    height: 6px; 
+    border-radius: 50%; 
+}
+
+/* FILE UPLOADER (st.file_uploader) */
+.stFileUploader,
+div[data-testid="stFileUploader"] {
+    background-color: #FFFFE0;
+    border: 1px dashed #800020;
+    padding: 10px;
+}
+.stFileUploader button,
+div[data-testid="stFileUploader"] button {
+      background-color: #FFFACD !important;
+      color: #800020 !important;
+      border-color: #800020 !important;
+}
+.stFileUploader button:hover,
+div[data-testid="stFileUploader"] button:hover {
+    background-color: #FFFFE0 !important;
+}
