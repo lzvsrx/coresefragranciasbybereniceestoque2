@@ -1,9 +1,8 @@
 import sqlite3
-import base64
-from utils.database import generate_stock_pdf
 import os
 import hashlib
 import csv
+import json  # Importado para lidar com o campo 'lotes'
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
@@ -79,7 +78,9 @@ def create_tables():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. Cria a tabela 'produtos'
+    # 1. Cria a tabela 'produtos' com a NOVA ESTRUTURA (Lotes e Data de Adição)
+    # Nota: Se você tem dados antigos no DB, pode ser necessário deletar o arquivo estoque.db
+    # ou usar um comando ALTER TABLE/DROP TABLE para aplicar essa nova estrutura.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS produtos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,7 +91,12 @@ def create_tables():
             estilo TEXT,
             tipo TEXT,
             foto TEXT,
-            data_validade TEXT,
+            
+            -- NOVAS COLUNAS:
+            data_adicao TEXT NOT NULL,       -- Data em que o produto foi cadastrado (ISO Format)
+            lotes TEXT,                      -- Lista de validades e quantidades em formato JSON
+            
+            -- COLUNAS ANTIGAS MANTIDAS
             vendido INTEGER DEFAULT 0,
             data_ultima_venda TEXT
         );
@@ -108,6 +114,7 @@ def create_tables():
     
     # 3. Cria um usuário admin padrão se ele não existir
     try:
+        # Se você alterar a senha, precisa alterar aqui também
         cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
                        ("admin", hash_password("123"), "admin"))
     except sqlite3.IntegrityError:
@@ -125,46 +132,87 @@ create_tables()
 # FUNÇÕES CRUD DE PRODUTOS
 # ====================================================================
 
-def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto=None, data_validade=None):
-    """Adiciona um novo produto ao DB."""
+def deserialize_lotes(produto):
+    """Função auxiliar para converter a string JSON de lotes em uma lista Python."""
+    lotes_raw = produto.get('lotes')
+    produto['lotes'] = []
+    if lotes_raw:
+        try:
+            produto['lotes'] = json.loads(lotes_raw)
+        except json.JSONDecodeError:
+            produto['lotes'] = [] 
+    return produto
+
+def add_produto(nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_data):
+    """
+    Adiciona um novo produto ao DB.
+    'lotes_data' é uma lista de dicionários [{'validade': 'YYYY-MM-DD', 'quantidade': X}].
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # 1. Serializa a lista de lotes para JSON string
+    lotes_json = json.dumps(lotes_data)
+    
+    # 2. Registra a data de adição
+    data_adicao = datetime.now().isoformat()
+    
     cursor.execute(
-        "INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade)
+        # Note a adição de 'data_adicao' e 'lotes'
+        "INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_adicao, lotes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (nome, preco, quantidade_total, marca, estilo, tipo, foto, data_adicao, lotes_json)
     )
     conn.commit()
     conn.close()
 
 def get_all_produtos():
-    """Retorna todos os produtos, ordenados por nome."""
+    """Retorna todos os produtos, incluindo a data de adição e os lotes (como lista Python)."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Ordem por nome para facilitar visualização, pode mudar para ID/mais recente se preferir
     cursor.execute("SELECT * FROM produtos ORDER BY nome ASC") 
     produtos = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    return produtos
+
+    # Deserializa o campo 'lotes' para que o Streamlit possa usá-lo como uma lista
+    return [deserialize_lotes(p) for p in produtos]
 
 def get_produto_by_id(product_id):
-    """Busca um produto pelo ID."""
+    """Busca um produto pelo ID, desserializando os lotes."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM produtos WHERE id = ?", (product_id,))
     produto = cursor.fetchone()
     conn.close()
-    return dict(produto) if produto else None
+    
+    if produto:
+        return deserialize_lotes(dict(produto))
+    return None
 
-def update_produto(product_id, nome, preco, quantidade, marca, estilo, tipo, foto, data_validade):
-    """Atualiza um produto existente."""
+def update_produto(product_id, nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_data):
+    """
+    Atualiza um produto existente, incluindo a nova estrutura de lotes.
+    'lotes_data' é uma lista de dicionários [{'validade': 'YYYY-MM-DD', 'quantidade': X}].
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # 1. Serializa a lista de lotes para JSON string
+    lotes_json = json.dumps(lotes_data)
+    
     cursor.execute(
         """
-        UPDATE produtos SET nome=?, preco=?, quantidade=?, marca=?, estilo=?, tipo=?, foto=?, data_validade=?
+        UPDATE produtos SET 
+            nome=?, 
+            preco=?, 
+            quantidade=?, 
+            marca=?, 
+            estilo=?, 
+            tipo=?, 
+            foto=?, 
+            lotes=?
         WHERE id=?
         """,
-        (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, product_id)
+        (nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_json, product_id)
     )
     conn.commit()
     conn.close()
@@ -187,22 +235,64 @@ def delete_produto(product_id):
     conn.commit()
     conn.close()
 
-def mark_produto_as_sold(product_id, quantity_sold=1):
-    """Atualiza a quantidade e registra a última venda."""
+def mark_produto_as_sold(product_id, quantidade_vendida, lote_id):
+    """
+    Atualiza a quantidade e registra a última venda, subtraindo a quantidade 
+    do lote correspondente (identificado pela data de validade).
+    O 'lote_id' é a string da data de validade (ex: '2025-12-31').
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Usa ISO format para facilitar a conversão de volta
+    produto = get_produto_by_id(product_id)
+    if not produto:
+        raise ValueError("Produto não encontrado.")
+    
+    lotes = produto['lotes']
+    
+    # 1. Itera sobre os lotes para encontrar e decrementar o lote correto
+    lote_encontrado = False
+    for lote in lotes:
+        # Usa a string da validade como identificador do lote
+        if lote['validade'] == lote_id:
+            lote_encontrado = True
+            if lote['quantidade'] >= quantidade_vendida:
+                lote['quantidade'] -= quantidade_vendida
+            else:
+                raise ValueError(f"Quantidade insuficiente no lote ({lote['quantidade']} restantes).")
+            break
+            
+    if not lote_encontrado:
+        raise ValueError(f"Lote com validade {lote_id} não encontrado para este produto.")
+        
+    # 2. Recalcula a quantidade total do produto
+    nova_quantidade_total = sum(lote['quantidade'] for lote in lotes)
+    
+    # 3. Serializa a lista de lotes atualizada para JSON string
+    lotes_json_atualizado = json.dumps(lotes)
+    
+    # 4. Atualiza o DB
     cursor.execute(
-        "UPDATE produtos SET quantidade = quantidade - ?, vendido = 1, data_ultima_venda = ? WHERE id = ?",
-        (quantity_sold, datetime.now().isoformat(), product_id)
+        """
+        UPDATE produtos SET 
+            quantidade = ?, 
+            lotes = ?, 
+            vendido = 1, 
+            data_ultima_venda = ? 
+        WHERE id = ?
+        """,
+        (nova_quantidade_total, lotes_json_atualizado, datetime.now().isoformat(), product_id)
     )
+    
     conn.commit()
     conn.close()
+    return quantidade_vendida
 
 # ====================================================================
 # FUNÇÕES DE USUÁRIOS (LOGIN/ADMIN)
 # ====================================================================
+# (Funções de Usuário mantidas inalteradas)
+# ... (add_user, get_user, get_all_users) ...
 
 def add_user(username, password, role="staff"):
     """Adiciona um novo usuário (admin ou staff) ao banco de dados."""
@@ -250,11 +340,20 @@ def export_produtos_to_csv(filepath):
     if not produtos:
         return
         
+    # Inclui 'lotes' e 'data_adicao'
     fieldnames = list(produtos[0].keys())
     with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
         writer.writeheader()
-        writer.writerows(produtos)
+        
+        # Converte a lista 'lotes' de volta para string JSON para o CSV
+        produtos_para_csv = []
+        for p in produtos:
+            p_copy = p.copy()
+            p_copy['lotes'] = json.dumps(p_copy['lotes'])
+            produtos_para_csv.append(p_copy)
+            
+        writer.writerows(produtos_para_csv)
 
 def import_produtos_from_csv(filepath):
     """Importa produtos de um arquivo CSV (apenas adiciona novos)."""
@@ -267,13 +366,16 @@ def import_produtos_from_csv(filepath):
         for row in reader:
             # Tenta converter campos para o tipo correto, usa None/0 se falhar
             try:
-                # Garante que os campos cruciais não sejam nulos ou inválidos
                 nome = row.get('nome')
                 if not nome: continue 
                 
                 preco = float(row.get('preco', 0))
                 quantidade = int(row.get('quantidade', 0))
                 vendido = int(row.get('vendido', 0))
+                
+                # Assume que 'lotes' no CSV já está em formato JSON string
+                lotes_json = row.get('lotes', '[]') 
+                
             except ValueError:
                 # Pula a linha se os campos numéricos estiverem inválidos
                 continue 
@@ -282,12 +384,12 @@ def import_produtos_from_csv(filepath):
             try:
                 cursor.execute(
                     """
-                    INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, vendido, data_ultima_venda)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_adicao, lotes, vendido, data_ultima_venda)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         nome, preco, quantidade, row.get('marca'), row.get('estilo'), 
-                        row.get('tipo'), row.get('foto'), row.get('data_validade'), vendido, 
+                        row.get('tipo'), row.get('foto'), row.get('data_adicao', datetime.now().isoformat()), lotes_json, vendido, 
                         row.get('data_ultima_venda')
                     )
                 )
@@ -300,17 +402,17 @@ def import_produtos_from_csv(filepath):
     conn.close()
     return count
 
-
 def generate_stock_pdf(filepath):
-    """Gera um relatório PDF com a lista de produtos, listando por lote de validade."""
-    # Garante que os lotes são carregados corretamente
+    """Gera um relatório PDF com a lista de produtos, detalhando por lote."""
+    # Garante que os lotes são carregados corretamente como listas
     produtos = get_all_produtos() 
     
     # Cria uma lista plana de "linhas de relatório" (uma para cada lote)
     linhas_relatorio = []
     for p in produtos:
         lotes = p.get('lotes', [])
-        # Se não houver lotes (produto sem validade), usa a quantidade total
+        
+        # Se não houver lotes, mas houver quantidade total, cria uma linha "Sem Validade"
         if not lotes and p.get('quantidade', 0) > 0:
              linhas_relatorio.append({
                 'nome': p.get('nome'), 
@@ -323,6 +425,7 @@ def generate_stock_pdf(filepath):
                 'data_adicao': p.get('data_adicao')
             })
         else:
+            # Para cada lote, cria uma linha separada
             for lote in lotes:
                 if lote.get('quantidade', 0) > 0:
                     linhas_relatorio.append({
@@ -337,32 +440,23 @@ def generate_stock_pdf(filepath):
                     })
 
 
-    if not linhas_relatorio:
-        # ... (código para arquivo vazio) ...
-        c = canvas.Canvas(filepath, pagesize=A4)
-        c.setFont('Helvetica-Bold', 12)
-        c.drawString(cm, A4[1] - 50, 'Relatório de Estoque - Vazio')
-        c.drawString(cm, A4[1] - 70, 'Nenhum produto em estoque para gerar o relatório.')
-        c.save()
-        return
-
     c = canvas.Canvas(filepath, pagesize=A4)
     width, height = A4
     
     y_position = height - 50
     
-    # Título e Data de Geração (permanecem)
+    # Título
     c.setFont('Helvetica-Bold', 16)
     c.drawString(cm, y_position, 'Relatório de Estoque Detalhado por Lote')
     y_position -= 20
     
+    # Data de Geração
     c.setFont('Helvetica', 10)
     c.drawString(cm, y_position, f'Data de Geração: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
     y_position -= 20
     
     # Cabeçalho da tabela - Adicionando Data de Adição
     c.setFont('Helvetica-Bold', 8)
-    # Reajustando colunas para caber a Data de Adição
     col_x = [cm*0.5, cm*4.5, cm*8.5, cm*12.5, cm*14.5, cm*16.5, cm*19] 
     col_names = ['Nome', 'Marca/Estilo', 'Tipo', 'Preço', 'Qtd', 'Validade', 'Adição']
     
@@ -370,13 +464,14 @@ def generate_stock_pdf(filepath):
         c.drawString(col_x[i], y_position, name)
         
     y_position -= 5
-    c.line(cm*0.5, y_position, width - cm*0.5, y_position) # Linha mais larga
+    c.line(cm*0.5, y_position, width - cm*0.5, y_position) # Linha
     y_position -= 10
     
     # Conteúdo da tabela (Iterando sobre as linhas_relatorio)
     c.setFont('Helvetica', 8)
     for p in linhas_relatorio:
-        if y_position < 30: # Nova página antes do final
+        # Verifica se precisa de nova página
+        if y_position < 30: 
             c.showPage() 
             y_position = height - 50
             # Repete o cabeçalho
@@ -393,6 +488,7 @@ def generate_stock_pdf(filepath):
         validade_formatada = 'S/V'
         if validade and validade != 'Sem Validade':
             try:
+                # Converte ISO format (armazenado no DB) para DD/MM/AAAA
                 validade_formatada = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
             except ValueError:
                 validade_formatada = 'Inválida'
@@ -401,7 +497,7 @@ def generate_stock_pdf(filepath):
         adicao_formatada = ''
         if data_adicao:
              try:
-                # Exibe apenas a data (ou data/hora reduzida)
+                # Exibe a data de adição
                 adicao_formatada = datetime.fromisoformat(data_adicao).strftime('%d/%m/%y')
              except ValueError:
                  adicao_formatada = 'Inválida'
@@ -415,31 +511,14 @@ def generate_stock_pdf(filepath):
         preco = p.get('preco', 0.0)
 
         # Desenha as linhas
-        c.drawString(col_x[0], y_position, nome[:25]) # Limita o tamanho do nome
-        c.drawString(col_x[1], y_position, f"{marca[:10]}/{estilo[:10]}") # Limita o tamanho
+        c.drawString(col_x[0], y_position, nome[:25]) 
+        c.drawString(col_x[1], y_position, f"{marca[:10]}/{estilo[:10]}") 
         c.drawString(col_x[2], y_position, tipo[:15])
         c.drawString(col_x[3], y_position, f"R$ {float(preco):.2f}")
         c.drawString(col_x[4], y_position, str(quantidade))
         c.drawString(col_x[5], y_position, validade_formatada)
         c.drawString(col_x[6], y_position, adicao_formatada)
         
-        y_position -= 10 # Reduz o espaçamento entre linhas
+        y_position -= 10 
         
     c.save()
-    def get_binary_file_downloader_html(file_path, file_label='Baixar PDF de Estoque'):
-    # ... (código da função Base64) ...
-    pass
-    if st.button('Gerar Relatório de Estoque'):
-    PDF_FILE_PATH = "Relatorio_Estoque.pdf"
-    
-    try:
-        # Chama a função que salva o PDF no disco
-        generate_stock_pdf(PDF_FILE_PATH) 
-        
-        # Gera e exibe o botão de download
-        download_link_html = get_binary_file_downloader_html(PDF_FILE_PATH, '📥 Baixar Relatório PDF')
-        st.markdown(download_link_html, unsafe_allow_html=True)
-        st.success("Relatório gerado com sucesso!")
-        
-    except Exception as e:
-        st.error(f"Erro ao gerar o PDF: {e}")
