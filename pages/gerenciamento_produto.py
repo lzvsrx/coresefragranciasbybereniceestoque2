@@ -24,7 +24,7 @@ load_css("style.css")
 
 st.set_page_config(page_title="Gerenciar Produtos - Cores e Fragrâncias", layout="wide")
 
-# Inicialização de estado
+# Inicialização de estado de sessão
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'role' not in st.session_state: st.session_state['role'] = 'staff'
 if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
@@ -264,7 +264,7 @@ def show_edit_form():
 
 def manage_products_list():
     st.subheader("Lista de Produtos")
-    produtos = get_all_produtos() # Assume que esta função retorna também os históricos de adição e venda
+    produtos = get_all_produtos()
     
     # --- Ações de Arquivo (Import/Export/PDF) ---
     col_a, col_b, col_c = st.columns(3)
@@ -298,22 +298,20 @@ def manage_products_list():
         # 1. Botão para gerar o PDF
         if st.button('Gerar Relatório PDF', key='btn_pdf'):
             try:
-                # Chama a função de backend que cria o arquivo no caminho 'pdf_path'
-                # A função generate_stock_pdf deve aceitar (pdf_path, produtos)
+                # Passa o caminho e a lista de produtos (espera 2 argumentos no backend)
                 generate_stock_pdf(pdf_path, produtos) 
                 st.session_state['pdf_generated_path'] = pdf_path
                 st.toast('Relatório PDF gerado com sucesso!')
                 st.rerun() 
             except Exception as e:
-                # Se houver erro na geração (e.g., generate_stock_pdf falha), 
-                # garantimos que o estado seja limpo.
+                # Garante que o estado seja limpo em caso de falha na geração
                 st.error(f'Erro ao gerar PDF: {e}')
                 st.session_state['pdf_generated_path'] = None
                 
         # 2. Lógica para Botão de Download (Aparece SOMENTE após a geração)
         caminho_pdf_gerado = st.session_state.get('pdf_generated_path')
         
-        # Verificamos se o caminho existe e se o arquivo existe no disco
+        # Verifica se o caminho existe no estado e se o arquivo existe no disco
         if caminho_pdf_gerado and os.path.exists(caminho_pdf_gerado):
             
             # Lê o conteúdo binário do PDF
@@ -328,11 +326,83 @@ def manage_products_list():
                     mime="application/pdf"
                 )
             except Exception as e:
+                # Limpa o estado se a leitura do arquivo falhar (resolve erro de variável não definida)
                 st.error(f"Erro ao preparar o download do arquivo: {e}")
-                # Limpa o estado se a leitura do arquivo falhar
                 st.session_state['pdf_generated_path'] = None 
             
     st.markdown("---")
+
+    if not produtos:
+        st.info("Nenhum produto cadastrado.")
+        return
+        
+    for p in produtos:
+        produto_id = p.get("id")
+        with st.container(border=True):
+            cols = st.columns([3,1,1])
+            with cols[0]:
+                st.markdown(f"### {p.get('nome')} <small style='color:gray'>ID: {produto_id}</small>", unsafe_allow_html=True)
+                
+                try:
+                    # Formatação brasileira: Ponto para milhar e vírgula para decimal (ex: R$ 1.234,56)
+                    preco_exibicao = f"R$ {float(p.get('preco')):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                except (ValueError, TypeError):
+                    preco_exibicao = "R$ N/A"
+
+                st.write(f"**Preço:** {preco_exibicao} • **Quantidade Total:** {p.get('quantidade', 0)}")
+                st.write(f"**Marca:** {p.get('marca')} • **Estilo:** {p.get('estilo')} • **Tipo:** {p.get('tipo')}")
+                
+                if p.get('lotes'):
+                    lotes_info = []
+                    try:
+                        lotes = json.loads(p['lotes'])
+                        for lote in lotes:
+                            validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
+                            lotes_info.append(f"Qtd: {lote['quantidade']} (Vence em {validade})")
+                        st.caption("Lotes Ativos: " + " | ".join(lotes_info))
+                    except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+                        st.caption("Lotes Ativos: Estrutura de lote inválida no DB")
+                
+                
+                quantidade_atual = int(p.get("quantidade", 0))
+                if quantidade_atual > 0:
+                    if st.button("Vender 1 Unidade", key=f'sell_{produto_id}'):
+                        try:
+                            mark_produto_as_sold(produto_id, 1)
+                            st.success(f"1 unidade de '{p.get('nome')}' foi vendida.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao marcar venda: {e}")
+                else:
+                    st.info("Fora de estoque.")
+
+            with cols[1]:
+                photo_path = os.path.join(ASSETS_DIR, p.get('foto')) if p.get('foto') else None
+                if photo_path and os.path.exists(photo_path):
+                    st.image(photo_path, width=120)
+                else:
+                    st.info('Sem foto')
+                    
+            with cols[2]:
+                role = st.session_state.get('role','staff')
+                if st.button('Editar', key=f'mod_{produto_id}'):
+                    st.session_state['pdf_generated_path'] = None 
+                    st.session_state['edit_product_id'] = produto_id
+                    st.session_state['edit_mode'] = True
+                    st.rerun()
+
+                if role == 'admin':
+                    if st.button('Remover', key=f'rem_{produto_id}'):
+                        try:
+                            delete_produto(produto_id)
+                            st.warning(f"Produto '{p.get('nome')}' removido.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao remover produto: {e}")
+                else:
+                    st.caption('Remover (admin)')
+                    
+            st.markdown("---")
 
 
 # --- FLUXO PRINCIPAL DA PÁGINA ---
@@ -356,4 +426,3 @@ else:
             add_product_form_com_colunas()
         else:
             manage_products_list()
-
