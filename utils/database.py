@@ -300,11 +300,43 @@ def import_produtos_from_csv(filepath):
 
 
 def generate_stock_pdf(filepath):
-    """Gera um relatório PDF com a lista de produtos."""
-    produtos = get_all_produtos()
+    """Gera um relatório PDF com a lista de produtos, listando por lote de validade."""
+    # Garante que os lotes são carregados corretamente
+    produtos = get_all_produtos() 
     
-    if not produtos:
-        # Cria um arquivo vazio se não houver produtos
+    # Cria uma lista plana de "linhas de relatório" (uma para cada lote)
+    linhas_relatorio = []
+    for p in produtos:
+        lotes = p.get('lotes', [])
+        # Se não houver lotes (produto sem validade), usa a quantidade total
+        if not lotes and p.get('quantidade', 0) > 0:
+             linhas_relatorio.append({
+                'nome': p.get('nome'), 
+                'marca': p.get('marca'), 
+                'estilo': p.get('estilo'), 
+                'tipo': p.get('tipo'), 
+                'quantidade': p.get('quantidade'), 
+                'preco': p.get('preco'), 
+                'validade': 'Sem Validade',
+                'data_adicao': p.get('data_adicao')
+            })
+        else:
+            for lote in lotes:
+                if lote.get('quantidade', 0) > 0:
+                    linhas_relatorio.append({
+                        'nome': p.get('nome'), 
+                        'marca': p.get('marca'), 
+                        'estilo': p.get('estilo'), 
+                        'tipo': p.get('tipo'), 
+                        'quantidade': lote.get('quantidade', 0), 
+                        'preco': p.get('preco'), 
+                        'validade': lote.get('validade'), # Formato ISO
+                        'data_adicao': p.get('data_adicao')
+                    })
+
+
+    if not linhas_relatorio:
+        # ... (código para arquivo vazio) ...
         c = canvas.Canvas(filepath, pagesize=A4)
         c.setFont('Helvetica-Bold', 12)
         c.drawString(cm, A4[1] - 50, 'Relatório de Estoque - Vazio')
@@ -317,73 +349,78 @@ def generate_stock_pdf(filepath):
     
     y_position = height - 50
     
-    # Título
+    # Título e Data de Geração (permanecem)
     c.setFont('Helvetica-Bold', 16)
-    c.drawString(cm, y_position, 'Relatório de Estoque - Cores e Fragrâncias')
+    c.drawString(cm, y_position, 'Relatório de Estoque Detalhado por Lote')
     y_position -= 20
     
-    # Data de Geração
     c.setFont('Helvetica', 10)
     c.drawString(cm, y_position, f'Data de Geração: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
     y_position -= 20
     
-    # Cabeçalho da tabela
-    c.setFont('Helvetica-Bold', 10)
-    col_x = [cm, cm*5, cm*10, cm*13, cm*15, cm*17.5] # Posições X das colunas
-    c.drawString(col_x[0], y_position, 'Nome')
-    c.drawString(col_x[1], y_position, 'Marca/Estilo')
-    c.drawString(col_x[2], y_position, 'Tipo')
-    c.drawString(col_x[3], y_position, 'Qtd')
-    c.drawString(col_x[4], y_position, 'Preço')
-    c.drawString(col_x[5], y_position, 'Validade')
-    y_position -= 5
-    c.line(cm, y_position, width - cm, y_position)
-    y_position -= 15
+    # Cabeçalho da tabela - Adicionando Data de Adição
+    c.setFont('Helvetica-Bold', 8)
+    # Reajustando colunas para caber a Data de Adição
+    col_x = [cm*0.5, cm*4.5, cm*8.5, cm*12.5, cm*14.5, cm*16.5, cm*19] 
+    col_names = ['Nome', 'Marca/Estilo', 'Tipo', 'Preço', 'Qtd', 'Validade', 'Adição']
     
-    # Conteúdo da tabela
-    c.setFont('Helvetica', 9)
-    for p in produtos:
-        if y_position < 40: # Se estiver chegando no fim da página
-            c.showPage() # Nova página
+    for i, name in enumerate(col_names):
+        c.drawString(col_x[i], y_position, name)
+        
+    y_position -= 5
+    c.line(cm*0.5, y_position, width - cm*0.5, y_position) # Linha mais larga
+    y_position -= 10
+    
+    # Conteúdo da tabela (Iterando sobre as linhas_relatorio)
+    c.setFont('Helvetica', 8)
+    for p in linhas_relatorio:
+        if y_position < 30: # Nova página antes do final
+            c.showPage() 
             y_position = height - 50
             # Repete o cabeçalho
-            c.setFont('Helvetica-Bold', 10)
-            c.drawString(col_x[0], y_position, 'Nome')
-            c.drawString(col_x[1], y_position, 'Marca/Estilo')
-            c.drawString(col_x[2], y_position, 'Tipo')
-            c.drawString(col_x[3], y_position, 'Qtd')
-            c.drawString(col_x[4], y_position, 'Preço')
-            c.drawString(col_x[5], y_position, 'Validade')
+            c.setFont('Helvetica-Bold', 8)
+            for i, name in enumerate(col_names):
+                c.drawString(col_x[i], y_position, name)
             y_position -= 5
-            c.line(cm, y_position, width - cm, y_position)
-            y_position -= 15
-            c.setFont('Helvetica', 9)
+            c.line(cm*0.5, y_position, width - cm*0.5, y_position)
+            y_position -= 10
+            c.setFont('Helvetica', 8)
 
-        # Formatação de Data de Validade
-        validade = p.get('data_validade') or '-'
-        if validade != '-':
+        # Formatação de Datas
+        validade = p.get('validade')
+        validade_formatada = 'S/V'
+        if validade and validade != 'Sem Validade':
             try:
-                # Converte ISO format (armazenado no DB) para DD/MM/AAAA
-                validade = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
+                validade_formatada = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
             except ValueError:
-                pass # Mantém o valor como está se a conversão falhar
-                
+                validade_formatada = 'Inválida'
+        
+        data_adicao = p.get('data_adicao')
+        adicao_formatada = ''
+        if data_adicao:
+             try:
+                # Exibe apenas a data (ou data/hora reduzida)
+                adicao_formatada = datetime.fromisoformat(data_adicao).strftime('%d/%m/%y')
+             except ValueError:
+                 adicao_formatada = 'Inválida'
+                 
         # Garante que os campos não sejam None
-        nome = p.get('nome') or '-'
-        marca = p.get('marca') or '-'
-        estilo = p.get('estilo') or '-'
-        tipo = p.get('tipo') or '-'
-        quantidade = p.get('quantidade') or 0
-        preco = p.get('preco') or 0.0
+        nome = p.get('nome', '-')
+        marca = p.get('marca', '-')
+        estilo = p.get('estilo', '-')
+        tipo = p.get('tipo', '-')
+        quantidade = p.get('quantidade', 0)
+        preco = p.get('preco', 0.0)
 
         # Desenha as linhas
-        c.drawString(col_x[0], y_position, nome[:35]) # Limita o tamanho
-        c.drawString(col_x[1], y_position, f"{marca}/{estilo}")
-        c.drawString(col_x[2], y_position, tipo[:25])
-        c.drawString(col_x[3], y_position, str(quantidade))
-        c.drawString(col_x[4], y_position, f"R$ {float(preco):.2f}")
-        c.drawString(col_x[5], y_position, validade)
+        c.drawString(col_x[0], y_position, nome[:25]) # Limita o tamanho do nome
+        c.drawString(col_x[1], y_position, f"{marca[:10]}/{estilo[:10]}") # Limita o tamanho
+        c.drawString(col_x[2], y_position, tipo[:15])
+        c.drawString(col_x[3], y_position, f"R$ {float(preco):.2f}")
+        c.drawString(col_x[4], y_position, str(quantidade))
+        c.drawString(col_x[5], y_position, validade_formatada)
+        c.drawString(col_x[6], y_position, adicao_formatada)
         
-        y_position -= 15
+        y_position -= 10 # Reduz o espaçamento entre linhas
         
     c.save()
