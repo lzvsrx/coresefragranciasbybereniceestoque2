@@ -1,473 +1,367 @@
-import streamlit as st
-import os
+import sqlite3
+import pandas as pd
 import json
-from datetime import datetime, date
-from utils.database import (
-    add_produto, get_all_produtos, update_produto, delete_produto, get_produto_by_id,
-    export_produtos_to_csv, import_produtos_from_csv, 
-    # Assumimos que a função abaixo existe no utils/database.py:
-    export_produtos_to_excel, 
-    generate_stock_pdf,
-    mark_produto_as_sold,
-    MARCAS, ESTILOS, TIPOS, ASSETS_DIR
-)
+from datetime import datetime
+import os
+from fpdf import FPDF # Usaremos fpdf para a geração de PDF
 
-# --- Configurações Iniciais e CSS ---
-def load_css(file_name):
-    """Carrega e aplica o CSS personalizado, se o arquivo existir."""
-    if not os.path.exists(file_name):
-        return
+# --- Configurações ---
+DB_NAME = 'database.db'
+ASSETS_DIR = 'assets'
+if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
+if not os.path.exists('data'): os.makedirs('data')
+
+MARCAS = ['Marca A', 'Marca B', 'Marca C', 'Outra']
+ESTILOS = ['Doce', 'Cítrico', 'Amadeirado', 'Floral', 'Fresco', 'Outro']
+TIPOS = ['Perfume', 'Creme', 'Sabonete', 'Body Splash', 'Óleo']
+
+# --- Conexão e Inicialização do Banco de Dados ---
+def create_connection():
+    """Cria uma conexão com o banco de dados SQLite."""
+    conn = None
     try:
-        with open(file_name, encoding='utf-8') as f: 
-            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-    except Exception:
-        pass
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as e:
+        print(f"Erro ao conectar ao SQLite: {e}")
+    return conn
 
-load_css("style.css")
-
-st.set_page_config(page_title="Gerenciar Produtos - Cores e Fragrâncias", layout="wide")
-
-# Inicialização de estado de sessão
-if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
-if 'role' not in st.session_state: st.session_state['role'] = 'staff'
-if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
-if 'edit_product_id' not in st.session_state: st.session_state['edit_product_id'] = None
-if 'lotes_data' not in st.session_state: st.session_state['lotes_data'] = []
-if 'pdf_generated_path' not in st.session_state: st.session_state['pdf_generated_path'] = None 
-if 'csv_generated_path' not in st.session_state: st.session_state['csv_generated_path'] = None 
-if 'excel_generated_path' not in st.session_state: st.session_state['excel_generated_path'] = None 
-
-
-# -------------------------------------------------------------------
-## 📦 Cadastro de Novo Produto
-# -------------------------------------------------------------------
-def add_product_form_com_colunas():
-    st.subheader("Adicionar Novo Produto")
-    
-    if not os.path.exists(ASSETS_DIR):
-        os.makedirs(ASSETS_DIR)
-    
-    st.session_state['lotes_data'] = []
-    
-    with st.form("add_product_form", clear_on_submit=False):
-        
-        st.markdown("##### Detalhes Principais")
-        col1, col2 = st.columns(2) 
-        
-        with col1:
-            nome = st.text_input("Nome do Produto", max_chars=150)
-            marca = st.selectbox("📝 Marca do Produto", options=['Selecionar'] + MARCAS, key="add_input_marca")
-            tipo = st.selectbox("🏷️ Tipo de Produto", options=['Selecionar'] + TIPOS, key="add_input_tipo")
-            
-        with col2:
-            estilo = st.selectbox("Estilo", ['Selecionar'] + ESTILOS, key="add_input_estilo")
-            preco = st.number_input("Preço (R$)", min_value=0.01, format="%.2f", step=1.0)
-            foto = st.file_uploader("🖼️ Foto do Produto", type=['png', 'jpg', 'jpeg'], key="add_input_foto")
-        
-        st.markdown("---")
-        st.markdown("##### 📦 Lote e Quantidade (Obrigatório)")
-        
-        col_new1, col_new2 = st.columns(2)
-        new_validade = col_new1.date_input("🗓️ Data de Validade", value=date.today(), key="new_validade_lote")
-        new_quantidade = col_new2.number_input("Quantidade Inicial", min_value=0, step=1, value=1)
-        
-        submitted = st.form_submit_button("Adicionar Produto")
-
-        if submitted:
-            total_quantidade = new_quantidade
-            
-            if not nome or preco <= 0 or new_quantidade <= 0 or marca == 'Selecionar' or tipo == 'Selecionar':
-                st.error("Nome, Preço (positivo), Quantidade (maior que zero), Marca e Tipo são obrigatórios.")
-                return
-            
-            lotes_data = [{
-                'validade': new_validade.isoformat(),
-                'quantidade': new_quantidade
-            }]
-            
-            photo_name = None
-            if foto:
-                try:
-                    photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{foto.name.split('.')[-1]}"
-                    file_path = os.path.join(ASSETS_DIR, photo_name)
-                    with open(file_path, "wb") as f:
-                        f.write(foto.getbuffer())
-                except Exception as e:
-                    st.error(f"Erro ao salvar a foto: {e}. Tente novamente.")
-                    return
-                
-            try:
-                add_produto(
-                    nome, preco, total_quantidade, marca, estilo, tipo, 
-                    photo_name, lotes_data
+def init_db():
+    """Inicializa as tabelas do banco de dados."""
+    conn = create_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS produtos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL,
+                    preco REAL NOT NULL,
+                    quantidade INTEGER NOT NULL,
+                    marca TEXT,
+                    estilo TEXT,
+                    tipo TEXT,
+                    foto TEXT,
+                    lotes TEXT -- JSON string para armazenar [{validade: data, quantidade: 10}]
                 )
-                st.success(f"Produto '{nome}' adicionado com sucesso!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao adicionar produto no banco de dados: {e}")
-
-
-# -------------------------------------------------------------------
-## 📝 Edição de Produto (Omitido para Brevidade, pois não houve alteração)
-# -------------------------------------------------------------------
-
-def show_edit_form():
-    """Exibe o formulário de edição para o produto selecionado, adaptado para Lotes."""
-    produto_id = st.session_state.get('edit_product_id')
-    produto = get_produto_by_id(produto_id)
-    
-    if not produto:
-        st.error("Produto não encontrado ou ID inválido.")
-        st.session_state["edit_mode"] = False
-        st.session_state["edit_product_id"] = None
-        return
-
-    st.subheader(f"Editar Produto: {produto.get('nome')}")
-
-    produto_lotes = []
-    try:
-        produto_lotes = json.loads(produto.get('lotes', '[]'))
-    except (json.JSONDecodeError, TypeError):
-        st.warning("Erro ao carregar lotes do banco de dados. Iniciando com lotes vazios.")
-        produto_lotes = []
-
-    if st.session_state.get('edit_id') != produto_id:
-        st.session_state['lotes_data'] = produto_lotes
-        st.session_state['edit_id'] = produto_id
-        
-    if 'lotes_data' not in st.session_state:
-         st.session_state['lotes_data'] = []
-    
-    default_preco = float(produto.get("preco", 0.01))
-
-    with st.form(key=f"edit_product_form_{produto_id}", clear_on_submit=False):
-        
-        st.markdown("##### Detalhes Principais")
-        col1, col2 = st.columns(2)
-        with col1:
-            nome = st.text_input("Nome", value=produto.get("nome"))
-            preco = st.number_input("Preço (R$)", value=default_preco, format="%.2f", min_value=0.01)
-        
-        with col2:
-            marca_index = MARCAS.index(produto.get("marca")) if produto.get("marca") in MARCAS else 0
-            estilo_index = ESTILOS.index(produto.get("estilo")) if produto.get("estilo") in ESTILOS else 0
-            tipo_index = TIPOS.index(produto.get("tipo")) if produto.get("tipo") in TIPOS else 0
-
-            marca = st.selectbox("Marca", MARCAS, index=marca_index)
-            estilo = st.selectbox("Estilo", ESTILOS, index=estilo_index)
-            tipo = st.selectbox("Tipo", TIPOS, index=tipo_index)
-            
-        uploaded = st.file_uploader("Alterar Foto", type=["jpg","png","jpeg"])
-
-        st.markdown("---")
-        st.markdown("##### 📦 Gestão de Lotes por Validade")
-
-        total_quantidade_calculada = 0
-        lotes_para_manter = []
-        
-        # 2. Exibe e gerencia lotes existentes
-        if st.session_state.get('lotes_data'):
-            for i, lote in enumerate(st.session_state['lotes_data']):
-                col_i1, col_i2, col_i3 = st.columns([0.4, 0.4, 0.2])
-                
-                try:
-                    lote_validade_dt = datetime.fromisoformat(lote['validade']).date()
-                except (ValueError, TypeError):
-                    lote_validade_dt = date.today()
-
-                
-                nova_validade = col_i1.date_input(f"Validade Lote {i+1}", value=lote_validade_dt, key=f"edit_validade_{i}")
-                nova_quantidade = col_i2.number_input(f"Quantidade Lote {i+1}", min_value=0, value=lote['quantidade'], key=f"edit_quantidade_{i}")
-                
-                if col_i3.button("Remover Lote", key=f"edit_remover_{i}"):
-                    st.session_state['lotes_data'].pop(i)
-                    st.experimental_rerun()
-                
-                lotes_para_manter.append({
-                    'validade': nova_validade.isoformat() if nova_validade else None,
-                    'quantidade': nova_quantidade
-                })
-                total_quantidade_calculada += nova_quantidade
-                st.markdown("---")
-            
-            st.session_state['lotes_data'] = lotes_para_manter
-
-        # 3. Adicionar novo lote
-        st.markdown("##### Adicionar Novo Lote")
-        col_new1, col_new2 = st.columns(2)
-        new_validade = col_new1.date_input("Validade do Novo Lote", value=date.today(), key="edit_new_validade_lote")
-        new_quantidade = col_new2.number_input("Quantidade do Novo Lote", min_value=0, value=0, key="edit_new_quantidade_lote")
-        
-        st.warning(f"Quantidade Total em Estoque (calculada): **{total_quantidade_calculada + new_quantidade}**")
-        st.markdown("---")
-
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            save = st.form_submit_button("Salvar Alterações")
-        with col_btn2:
-            cancel = st.form_submit_button("Cancelar Edição")
-
-        if save:
-            
-            final_lotes = st.session_state['lotes_data'].copy()
-            
-            if new_quantidade > 0:
-                final_lotes.append({
-                    'validade': new_validade.isoformat(),
-                    'quantidade': new_quantidade
-                })
-                
-            final_quantidade_total = sum(lote['quantidade'] for lote in final_lotes)
-            
-            if not nome or preco <= 0 or final_quantidade_total < 0:
-                st.error("Nome, Preço (positivo) e Quantidade Total (não negativa) são obrigatórios.")
-                return
-
-            photo_name = produto.get("foto")
-            if uploaded:
-                if photo_name and os.path.exists(os.path.join(ASSETS_DIR, photo_name)):
-                    try: 
-                        os.remove(os.path.join(ASSETS_DIR, photo_name))
-                    except Exception: 
-                        st.warning("Não foi possível remover a foto antiga, mas a nova será salva.")
-                
-                try:
-                    extension = uploaded.name.split('.')[-1]
-                    photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extension}"
-                    file_path = os.path.join(ASSETS_DIR, photo_name)
-                    with open(file_path, "wb") as f:
-                        f.write(uploaded.getbuffer())
-                except Exception as e:
-                    st.error(f"Erro ao salvar a nova foto: {e}")
-                    return
-            
-            try:
-                update_produto(
-                    produto_id, nome, preco, final_quantidade_total, marca, 
-                    estilo, tipo, photo_name, final_lotes
+            """)
+            # Tabela para histórico de transações (Adição ou Venda)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transacoes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    produto_id INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    quantidade INTEGER NOT NULL,
+                    tipo TEXT NOT NULL, -- 'ADICAO' ou 'VENDA'
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
                 )
-                st.success(f"Produto '{nome}' atualizado com sucesso!")
-                st.session_state["edit_mode"] = False
-                st.session_state["edit_product_id"] = None
-                st.session_state["edit_id"] = None
-                del st.session_state['lotes_data']
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro ao atualizar produto no banco de dados: {e}")
+            """)
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"Erro ao inicializar o banco de dados: {e}")
+        finally:
+            conn.close()
+
+# Inicializa o DB ao carregar o módulo
+init_db()
+
+# --- Funções CRUD e de Gestão de Lotes ---
+
+def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto, lotes_data):
+    """Adiciona um novo produto e registra a transação de adição inicial."""
+    conn = create_connection()
+    if conn:
+        try:
+            lotes_json = json.dumps(lotes_data)
+            cursor = conn.cursor()
+            
+            # 1. Insere o produto
+            cursor.execute("""
+                INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, lotes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (nome, preco, quantidade, marca, estilo, tipo, foto, lotes_json))
+            
+            produto_id = cursor.lastrowid
+            
+            # 2. Registra a transação de adição inicial
+            data_atual = datetime.now().isoformat()
+            if quantidade > 0:
+                cursor.execute("""
+                    INSERT INTO transacoes (produto_id, data, quantidade, tipo)
+                    VALUES (?, ?, ?, ?)
+                """, (produto_id, data_atual, quantidade, 'ADICAO'))
+            
+            conn.commit()
+            return produto_id
+        except sqlite3.Error as e:
+            print(f"Erro ao adicionar produto: {e}")
+        finally:
+            conn.close()
+
+def update_produto(id, nome, preco, quantidade, marca, estilo, tipo, foto, lotes_data):
+    """Atualiza um produto existente."""
+    conn = create_connection()
+    if conn:
+        try:
+            lotes_json = json.dumps(lotes_data)
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE produtos SET nome=?, preco=?, quantidade=?, marca=?, estilo=?, tipo=?, foto=?, lotes=?
+                WHERE id=?
+            """, (nome, preco, quantidade, marca, estilo, tipo, foto, lotes_json, id))
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"Erro ao atualizar produto: {e}")
+        finally:
+            conn.close()
+
+def delete_produto(id):
+    """Deleta um produto e suas transações associadas."""
+    conn = create_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM produtos WHERE id=?", (id,))
+            cursor.execute("DELETE FROM transacoes WHERE produto_id=?", (id,))
+            conn.commit()
+        except sqlite3.Error as e:
+            print(f"Erro ao deletar produto: {e}")
+        finally:
+            conn.close()
+
+def get_produto_by_id(id):
+    """Busca um produto pelo ID."""
+    conn = create_connection()
+    produto = None
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM produtos WHERE id=?", (id,))
+            produto = cursor.fetchone()
+            if produto:
+                return dict(produto)
+        except sqlite3.Error as e:
+            print(f"Erro ao buscar produto: {e}")
+        finally:
+            conn.close()
+    return produto
+    
+def get_transacoes_by_produto_id(produto_id):
+    """Busca o histórico de transações de um produto."""
+    conn = create_connection()
+    transacoes = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT data, quantidade, tipo FROM transacoes WHERE produto_id=? ORDER BY data DESC", (produto_id,))
+            transacoes = [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error as e:
+            print(f"Erro ao buscar transações: {e}")
+        finally:
+            conn.close()
+    return transacoes
+
+def get_all_produtos():
+    """Busca todos os produtos e anexa o histórico de transações."""
+    conn = create_connection()
+    produtos = []
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM produtos ORDER BY nome ASC")
+            
+            for row in cursor.fetchall():
+                produto = dict(row)
                 
-        if cancel:
-            st.session_state["edit_mode"] = False
-            st.session_state["edit_product_id"] = None
-            st.session_state["edit_id"] = None
-            if 'lotes_data' in st.session_state:
-                del st.session_state['lotes_data']
-            st.rerun()
+                # Anexa o histórico de transações
+                transacoes = get_transacoes_by_produto_id(produto['id'])
+                
+                produto['historico_adicao'] = [t['data'] for t in transacoes if t['tipo'] == 'ADICAO']
+                produto['historico_venda'] = [t['data'] for t in transacoes if t['tipo'] == 'VENDA']
+                
+                produtos.append(produto)
+                
+        except sqlite3.Error as e:
+            print(f"Erro ao buscar todos os produtos: {e}")
+        finally:
+            conn.close()
+    return produtos
 
-# -------------------------------------------------------------------
-## 📋 Lista e Gerenciamento de Produtos
-# -------------------------------------------------------------------
+def mark_produto_as_sold(produto_id, quantidade_vendida=1):
+    """Marca uma unidade do produto como vendida e registra a transação."""
+    conn = create_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            
+            # 1. Verifica e atualiza a quantidade no estoque
+            cursor.execute("SELECT quantidade FROM produtos WHERE id=?", (produto_id,))
+            estoque_atual = cursor.fetchone()['quantidade']
+            
+            if estoque_atual < quantidade_vendida:
+                raise ValueError("Estoque insuficiente para a venda.")
 
-def manage_products_list():
-    st.subheader("Lista de Produtos")
+            nova_quantidade = estoque_atual - quantidade_vendida
+            
+            cursor.execute("UPDATE produtos SET quantidade=? WHERE id=?", (nova_quantidade, produto_id))
+            
+            # 2. Registra a transação de venda
+            data_atual = datetime.now().isoformat()
+            cursor.execute("""
+                INSERT INTO transacoes (produto_id, data, quantidade, tipo)
+                VALUES (?, ?, ?, ?)
+            """, (produto_id, data_atual, quantidade_vendida, 'VENDA'))
+            
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Erro ao marcar produto como vendido: {e}")
+        except ValueError as e:
+             raise e
+        finally:
+            conn.close()
+    return False
+
+# --- Funções de Importação/Exportação (CSV, Excel, PDF) ---
+
+def import_produtos_from_csv(filepath):
+    """Simulação de importação de CSV (requer lógica para lidar com lotes e transações)."""
+    # Esta é uma simulação simples. Importação real precisa de lógica robusta.
+    print(f"Importando dados do arquivo: {filepath} (Simulação)")
+    # df = pd.read_csv(filepath)
+    # for index, row in df.iterrows():
+    #     add_produto(...)
+    pass
+
+def export_produtos_to_dataframe():
+    """Busca todos os produtos e retorna um DataFrame do Pandas."""
     produtos = get_all_produtos()
     
-    # --- Configurações de Caminho ---
-    DATA_DIR = 'data'
-    if not os.path.exists(DATA_DIR): 
-        os.makedirs(DATA_DIR)
-        
-    csv_path = os.path.join(DATA_DIR, 'relatorio_estoque.csv')
-    excel_path = os.path.join(DATA_DIR, 'relatorio_estoque.xlsx')
-    pdf_path = os.path.join(DATA_DIR, 'relatorio_estoque.pdf')
-    
-    # --- Ações de Arquivo (Import/Export/PDF) ---
-    st.markdown("##### 📥 Exportação de Dados e Relatórios")
-    col_a, col_b, col_c, col_d = st.columns([1,1,1,1])
-    
-    # --- CSV Download ---
-    with col_a:
-        if st.button('Gerar CSV', key='btn_csv'):
-            try:
-                export_produtos_to_csv(csv_path)
-                st.session_state['csv_generated_path'] = csv_path
-                st.toast('Arquivo CSV gerado com sucesso!')
-                st.rerun()
-            except Exception as e:
-                st.error(f'Erro ao gerar CSV: {e}')
-                st.session_state['csv_generated_path'] = None
-        
-        if st.session_state.get('csv_generated_path') and os.path.exists(st.session_state['csv_generated_path']):
-            try:
-                with open(st.session_state['csv_generated_path'], "rb") as file:
-                    st.download_button(
-                        label="⬇️ Baixar CSV",
-                        data=file.read(),
-                        file_name="relatorio_estoque.csv",
-                        mime="text/csv"
-                    )
-            except Exception as e:
-                st.error(f"Erro ao preparar o download do CSV: {e}")
-
-    # --- Excel Download ---
-    with col_b:
-        if st.button('Gerar Excel (XLSX)', key='btn_excel'):
-            try:
-                # Assumindo que esta função está no utils/database.py
-                export_produtos_to_excel(excel_path) 
-                st.session_state['excel_generated_path'] = excel_path
-                st.toast('Arquivo Excel gerado com sucesso!')
-                st.rerun()
-            except Exception as e:
-                st.error(f'Erro ao gerar Excel: {e}. Verifique se a função existe no backend.')
-                st.session_state['excel_generated_path'] = None
-        
-        if st.session_state.get('excel_generated_path') and os.path.exists(st.session_state['excel_generated_path']):
-            try:
-                with open(st.session_state['excel_generated_path'], "rb") as file:
-                    st.download_button(
-                        label="⬇️ Baixar Excel",
-                        data=file.read(),
-                        file_name="relatorio_estoque.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-            except Exception as e:
-                st.error(f"Erro ao preparar o download do Excel: {e}")
-
-    # --- PDF Download ---
-    with col_c:
-        if st.button('Gerar Relatório PDF', key='btn_pdf'):
-            try:
-                # Função corrigida para aceitar 2 argumentos (filepath, produtos)
-                generate_stock_pdf(pdf_path, produtos) 
-                st.session_state['pdf_generated_path'] = pdf_path
-                st.toast('Relatório PDF gerado com sucesso!')
-                st.rerun() 
-            except Exception as e:
-                st.error(f'Erro ao gerar PDF: {e}')
-                st.session_state['pdf_generated_path'] = None
-                
-        caminho_pdf_gerado = st.session_state.get('pdf_generated_path')
-        if caminho_pdf_gerado and os.path.exists(caminho_pdf_gerado):
-            try:
-                with open(caminho_pdf_gerado, "rb") as file:
-                    st.download_button(
-                        label="⬇️ Baixar PDF",
-                        data=file.read(),
-                        file_name="relatorio_estoque.pdf",
-                        mime="application/pdf"
-                    )
-            except Exception as e:
-                st.error(f"Erro ao preparar o download do PDF: {e}")
-                st.session_state['pdf_generated_path'] = None 
-
-    # --- Importar CSV ---
-    with col_d:
-        uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
-        if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
-            try:
-                # Nota: A função de backend precisa ser adaptada para ler o 'uploaded_csv'
-                import_produtos_from_csv('simulacao_path') 
-                st.success('Produtos importados com sucesso (Simulação).')
-                st.rerun()
-            except Exception as e:
-                st.error('Erro ao importar CSV: ' + str(e))
-            
-    st.markdown("---")
-
-    if not produtos:
-        st.info("Nenhum produto cadastrado.")
-        return
-        
+    # Prepara os dados para o DataFrame, desmembrando o JSON de lotes e histórico
+    data_for_df = []
     for p in produtos:
-        produto_id = p.get("id")
-        with st.container(border=True):
-            cols = st.columns([3,1,1])
-            with cols[0]:
-                st.markdown(f"### {p.get('nome')} <small style='color:gray'>ID: {produto_id}</small>", unsafe_allow_html=True)
-                
-                try:
-                    # Formatação brasileira: Ponto para milhar e vírgula para decimal (ex: R$ 1.234,56)
-                    preco_exibicao = f"R$ {float(p.get('preco')):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-                except (ValueError, TypeError):
-                    preco_exibicao = "R$ N/A"
-
-                st.write(f"**Preço:** {preco_exibicao} • **Quantidade Total:** {p.get('quantidade', 0)}")
-                st.write(f"**Marca:** {p.get('marca')} • **Estilo:** {p.get('estilo')} • **Tipo:** {p.get('tipo')}")
-                
-                if p.get('lotes'):
-                    lotes_info = []
-                    try:
-                        lotes = json.loads(p['lotes'])
-                        for lote in lotes:
-                            validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
-                            lotes_info.append(f"Qtd: {lote['quantidade']} (Vence em {validade})")
-                        st.caption("Lotes Ativos: " + " | ".join(lotes_info))
-                    except (json.JSONDecodeError, ValueError, TypeError, KeyError):
-                        st.caption("Lotes Ativos: Estrutura de lote inválida no DB")
-                
-                
-                quantidade_atual = int(p.get("quantidade", 0))
-                if quantidade_atual > 0:
-                    if st.button("Vender 1 Unidade", key=f'sell_{produto_id}'):
-                        try:
-                            mark_produto_as_sold(produto_id, 1)
-                            st.success(f"1 unidade de '{p.get('nome')}' foi vendida.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao marcar venda: {e}")
-                else:
-                    st.info("Fora de estoque.")
-
-            with cols[1]:
-                photo_path = os.path.join(ASSETS_DIR, p.get('foto')) if p.get('foto') else None
-                if photo_path and os.path.exists(photo_path):
-                    st.image(photo_path, width=120)
-                else:
-                    st.info('Sem foto')
-                    
-            with cols[2]:
-                role = st.session_state.get('role','staff')
-                if st.button('Editar', key=f'mod_{produto_id}'):
-                    # Limpa o estado de download ao entrar no modo de edição
-                    st.session_state['pdf_generated_path'] = None 
-                    st.session_state['csv_generated_path'] = None 
-                    st.session_state['excel_generated_path'] = None 
-                    st.session_state['edit_product_id'] = produto_id
-                    st.session_state['edit_mode'] = True
-                    st.rerun()
-
-                if role == 'admin':
-                    if st.button('Remover', key=f'rem_{produto_id}'):
-                        try:
-                            delete_produto(produto_id)
-                            st.warning(f"Produto '{p.get('nome')}' removido.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Erro ao remover produto: {e}")
-                else:
-                    st.caption('Remover (admin)')
-                    
-            st.markdown("---")
-
-
-# --- FLUXO PRINCIPAL DA PÁGINA ---
-
-if not st.session_state.get("logged_in"):
-    st.error("Acesso negado. Faça login na área administrativa para gerenciar produtos.")
-    st.info("Vá para a página 'Área Administrativa' para entrar ou criar um admin.")
-else:
-    st.sidebar.markdown(f"**Olá, {st.session_state.get('username')} ({st.session_state.get('role','staff').capitalize()})**")
-    
-    if st.session_state.get('edit_mode'):
-        show_edit_form()
-    else:
-        action = st.sidebar.selectbox(
-            "Ação", 
-            ["Visualizar / Modificar / Remover Produtos", "Adicionar Produto"],
-            key='main_action_selector'
-        )
+        lotes_str = p.get('lotes', '[]')
+        lotes_info = []
+        try:
+            lotes = json.loads(lotes_str)
+            for lote in lotes:
+                validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
+                lotes_info.append(f"Qtd: {lote['quantidade']} (V: {validade})")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            lotes_info.append("Erro/Inválido")
+            
+        # Formata o histórico
+        adicoes = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_adicao', [])]
+        vendas = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_venda', [])]
         
-        if action == "Adicionar Produto":
-            add_product_form_com_colunas()
-        else:
-            manage_products_list()
+        data_for_df.append({
+            'ID': p['id'],
+            'Nome': p['nome'],
+            'Preço (R$)': p['preco'],
+            'Qtd Total': p['quantidade'],
+            'Marca': p['marca'],
+            'Estilo': p['estilo'],
+            'Tipo': p['tipo'],
+            'Lotes': "; ".join(lotes_info),
+            'Histórico de Adição': " | ".join(adicoes),
+            'Histórico de Venda': " | ".join(vendas),
+            'Foto Filename': p.get('foto', '')
+        })
+        
+    return pd.DataFrame(data_for_df)
+
+def export_produtos_to_csv(filepath):
+    """Cria um arquivo CSV no caminho especificado."""
+    df = export_produtos_to_dataframe()
+    # Usa o separador ';' para compatibilidade com o Excel no Brasil
+    df.to_csv(filepath, index=False, sep=';', encoding='utf-8-sig')
+    print(f"CSV exportado para: {filepath}")
+
+def export_produtos_to_excel(filepath):
+    """Cria um arquivo Excel (XLSX) no caminho especificado."""
+    df = export_produtos_to_dataframe()
+    # Requer a biblioteca openpyxl
+    df.to_excel(filepath, index=False, engine='openpyxl')
+    print(f"Excel exportado para: {filepath}")
+
+def generate_stock_pdf(filepath, produtos):
+    """
+    Gera um relatório de estoque em PDF.
+    
+    Argumentos:
+        filepath (str): Caminho onde o PDF será salvo.
+        produtos (list): Lista de produtos, incluindo o histórico (retorno de get_all_produtos).
+    """
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 12)
+            self.cell(0, 10, 'Relatório de Estoque e Movimentação', 0, 1, 'C')
+            self.set_font('Arial', '', 10)
+            self.cell(0, 5, f"Data de Geração: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", 0, 1, 'R')
+            self.ln(5)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', 0, 0, 'C')
+
+    pdf = PDF('P', 'mm', 'A4')
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font('Arial', '', 10)
+    
+    # Larguras das colunas
+    col_widths = [50, 15, 20, 30, 70] # Nome, Qtd, Preço, Validades, Histórico
+    
+    for produto in produtos:
+        pdf.set_fill_color(200, 220, 255)
+        pdf.set_font('Arial', 'B', 11)
+        pdf.cell(0, 7, f"{produto['nome']} (ID: {produto['id']})", 1, 1, 'L', 1)
+        
+        pdf.set_font('Arial', 'B', 8)
+        pdf.cell(col_widths[0], 5, 'Detalhe', 1, 0, 'C')
+        pdf.cell(col_widths[1], 5, 'Qtd', 1, 0, 'C')
+        pdf.cell(col_widths[2], 5, 'Preço', 1, 0, 'C')
+        pdf.cell(col_widths[3], 5, 'Lotes/Validade', 1, 0, 'C')
+        pdf.cell(col_widths[4], 5, 'Histórico (Adição | Venda)', 1, 1, 'C')
+
+        pdf.set_font('Arial', '', 8)
+        
+        # Detalhes do produto
+        preco_formatado = f"R$ {produto['preco']:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        
+        # Preparar Histórico (para caber na célula)
+        adicoes = [datetime.fromisoformat(d).strftime('%d/%m/%y') for d in produto.get('historico_adicao', [])]
+        vendas = [datetime.fromisoformat(d).strftime('%d/%m/%y') for d in produto.get('historico_venda', [])]
+        
+        historico_resumo = f"Add: {len(adicoes)} ({', '.join(adicoes[:2])})"
+        historico_resumo += f" | Vnd: {len(vendas)} ({', '.join(vendas[:2])})"
+
+        # Preparar Lotes (para caber na célula)
+        lotes_info = []
+        try:
+            lotes = json.loads(produto.get('lotes', '[]'))
+            for lote in lotes:
+                validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%y')
+                lotes_info.append(f"Q:{lote['quantidade']} V:{validade}")
+        except:
+            lotes_info = ["Erro"]
+
+        # 1ª Linha de Dados
+        pdf.cell(col_widths[0], 5, f"Marca: {produto['marca']}", 1, 0, 'L')
+        pdf.cell(col_widths[1], 5, str(produto['quantidade']), 1, 0, 'C')
+        pdf.cell(col_widths[2], 5, preco_formatado, 1, 0, 'R')
+        pdf.cell(col_widths[3], 5, ' / '.join(lotes_info[:2]), 1, 0, 'L')
+        pdf.cell(col_widths[4], 5, historico_resumo, 1, 1, 'L')
+        
+        # 2ª Linha de Dados (Tipo/Estilo)
+        pdf.cell(col_widths[0], 5, f"Tipo: {produto['tipo']} | Estilo: {produto['estilo']}", 1, 1, 'L')
+        
+        pdf.ln(3) # Espaçamento entre produtos
+
+    pdf.output(filepath, 'F')
+    print(f"PDF gerado e salvo em: {filepath}")
+
+# --- Funções de Dummy (não necessitam de corpo no utils/database.py, mas estão aqui para completude) ---
+# import_produtos_from_csv já foi definido acima como uma simulação
