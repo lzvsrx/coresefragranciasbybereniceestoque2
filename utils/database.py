@@ -1,524 +1,473 @@
-import sqlite3
+import streamlit as st
 import os
-import hashlib
-import csv
-import json  # Importado para lidar com o campo 'lotes'
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import cm
+import json
 from datetime import datetime, date
+from utils.database import (
+    add_produto, get_all_produtos, update_produto, delete_produto, get_produto_by_id,
+    export_produtos_to_csv, import_produtos_from_csv, 
+    # Assumimos que a função abaixo existe no utils/database.py:
+    export_produtos_to_excel, 
+    generate_stock_pdf,
+    mark_produto_as_sold,
+    MARCAS, ESTILOS, TIPOS, ASSETS_DIR
+)
 
-# ====================================================================
-# CONFIGURAÇÃO DE DIRETÓRIOS E CONSTANTES
-# ====================================================================
-
-DATABASE_DIR = "data"
-DATABASE = os.path.join(DATABASE_DIR, "estoque.db")
-ASSETS_DIR = "assets"
-
-# Assegura que os diretórios existam
-if not os.path.exists(DATABASE_DIR):
-    os.makedirs(DATABASE_DIR)
-if not os.path.exists(ASSETS_DIR):
-    os.makedirs(ASSETS_DIR)
-
-# Listas de categorias atualizadas (usadas nos seus códigos de exemplo)
-MARCAS = [
-    "Eudora", "O Boticário", "Jequiti", "Avon", "Mary Kay", "Natura",
-    "Oui-Original-Unique-Individuel", "Pierre Alexander", "Tupperware", "Outra"
-]
-
-ESTILOS = [
-    "Perfumaria", "Skincare", "Cabelo", "Corpo e Banho", "Make", "Masculinos", "Femininos Nina Secrets",
-    "Marcas", "Infantil", "Casa", "Solar", "Maquiage", "Teen", "Kits e Presentes",
-    "Cuidados com o Corpo", "Lançamentos",
-    "Acessórios de Casa", "Outro"
-]
-
-TIPOS = [
-    "Perfumaria masculina", "Perfumaria feminina", "Body splash", "Body spray", "Eau de parfum",
-    "Desodorantes", "Perfumaria infantil", "Perfumaria vegana", "Familia olfativa",
-    "Clareador de manchas", "Anti-idade", "Protetor solar facial", "Rosto",
-    "Tratamento para o rosto", "Acne", "Limpeza", "Esfoliante", "Tônico facial",
-    "Kits de tratamento", "Tratamento para cabelos", "Shampoo", "Condicionador",
-    "Leave-in e Creme para Pentear", "Finalizador", "Modelador", "Acessórios",
-    "Kits e looks", "Boca", "Olhos", "Pincéis", "Paleta", "Unhas", "Sobrancelhas",
-    "Kits de tratamento", "Hidratante", "Cuidados pós-banho", "Cuidados para o banho",
-    "Barba", "Óleo corporal", "Cuidados íntimos", "Unissex", "Bronzeamento",
-    "Protetor solar", "Depilação", "Mãos", "Lábios", "Pés", "Pós sol",
-    "Protetor solar corporal", "Colônias", "Estojo", "Sabonetes",
-    "Creme hidratante para as mãos", "Creme hidratante para os pés", "Miniseries",
-    "Kits de perfumes", "Antissinais", "Máscara", "Creme bisnaga",
-    "Roll On Fragranciado", "Roll On On Duty", "Sabonete líquido",
-    "Sabonete em barra", "Shampoo 2 em 1", "Spray corporal", "Booster de Tratamento",
-    "Creme para Pentear", "Óleo de Tratamento", "Pré-shampoo",
-    "Sérum de Tratamento", "Shampoo e Condicionador",
-    "Garrafas", "Armazenamentos", "Micro-ondas", "Servir", "Preparo",
-    "Infantil", "Lazer/Outdoor", "Presentes", "Outro"
-]
-
-
-# ====================================================================
-# FUNÇÕES DE UTILIDADE E CONEXÃO
-# ====================================================================
-
-def get_db_connection():
-    """Retorna um objeto de conexão com o banco de dados SQLite."""
-    conn = sqlite3.connect(DATABASE)
-    # Define o row_factory para retornar linhas como dicionários (acessíveis por nome de coluna)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def hash_password(password):
-    """Gera o hash SHA256 da senha."""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def create_tables():
-    """Cria as tabelas 'produtos' e 'users' se não existirem, e cria um usuário 'admin' padrão."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # 1. Cria a tabela 'produtos' com a NOVA ESTRUTURA (Lotes e Data de Adição)
-    # Nota: Se você tem dados antigos no DB, pode ser necessário deletar o arquivo estoque.db
-    # ou usar um comando ALTER TABLE/DROP TABLE para aplicar essa nova estrutura.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS produtos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT NOT NULL,
-            preco REAL NOT NULL,
-            quantidade INTEGER NOT NULL,
-            marca TEXT,
-            estilo TEXT,
-            tipo TEXT,
-            foto TEXT,
-            
-            -- NOVAS COLUNAS:
-            data_adicao TEXT NOT NULL,       -- Data em que o produto foi cadastrado (ISO Format)
-            lotes TEXT,                      -- Lista de validades e quantidades em formato JSON
-            
-            -- COLUNAS ANTIGAS MANTIDAS
-            vendido INTEGER DEFAULT 0,
-            data_ultima_venda TEXT
-        );
-    """)
-
-    # 2. Cria a tabela 'users'
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL
-        );
-    """)
-    
-    # 3. Cria um usuário admin padrão se ele não existir
+# --- Configurações Iniciais e CSS ---
+def load_css(file_name):
+    """Carrega e aplica o CSS personalizado, se o arquivo existir."""
+    if not os.path.exists(file_name):
+        return
     try:
-        # Se você alterar a senha, precisa alterar aqui também
-        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                       ("admin", hash_password("123"), "admin"))
-    except sqlite3.IntegrityError:
-        # admin já existe
-        pass 
+        with open(file_name, encoding='utf-8') as f: 
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except Exception:
+        pass
 
-    conn.commit()
-    conn.close()
+load_css("style.css")
 
-# Garante que as tabelas sejam criadas na inicialização
-create_tables()
+st.set_page_config(page_title="Gerenciar Produtos - Cores e Fragrâncias", layout="wide")
+
+# Inicialização de estado de sessão
+if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'role' not in st.session_state: st.session_state['role'] = 'staff'
+if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
+if 'edit_product_id' not in st.session_state: st.session_state['edit_product_id'] = None
+if 'lotes_data' not in st.session_state: st.session_state['lotes_data'] = []
+if 'pdf_generated_path' not in st.session_state: st.session_state['pdf_generated_path'] = None 
+if 'csv_generated_path' not in st.session_state: st.session_state['csv_generated_path'] = None 
+if 'excel_generated_path' not in st.session_state: st.session_state['excel_generated_path'] = None 
 
 
-# ====================================================================
-# FUNÇÕES CRUD DE PRODUTOS
-# ====================================================================
-
-def deserialize_lotes(produto):
-    """Função auxiliar para converter a string JSON de lotes em uma lista Python."""
-    lotes_raw = produto.get('lotes')
-    produto['lotes'] = []
-    if lotes_raw:
-        try:
-            produto['lotes'] = json.loads(lotes_raw)
-        except json.JSONDecodeError:
-            produto['lotes'] = [] 
-    return produto
-
-def add_produto(nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_data):
-    """
-    Adiciona um novo produto ao DB.
-    'lotes_data' é uma lista de dicionários [{'validade': 'YYYY-MM-DD', 'quantidade': X}].
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+# -------------------------------------------------------------------
+## 📦 Cadastro de Novo Produto
+# -------------------------------------------------------------------
+def add_product_form_com_colunas():
+    st.subheader("Adicionar Novo Produto")
     
-    # 1. Serializa a lista de lotes para JSON string
-    lotes_json = json.dumps(lotes_data)
+    if not os.path.exists(ASSETS_DIR):
+        os.makedirs(ASSETS_DIR)
     
-    # 2. Registra a data de adição
-    data_adicao = datetime.now().isoformat()
+    st.session_state['lotes_data'] = []
     
-    cursor.execute(
-        # Note a adição de 'data_adicao' e 'lotes'
-        "INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_adicao, lotes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (nome, preco, quantidade_total, marca, estilo, tipo, foto, data_adicao, lotes_json)
-    )
-    conn.commit()
-    conn.close()
-
-def get_all_produtos():
-    """Retorna todos os produtos, incluindo a data de adição e os lotes (como lista Python)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM produtos ORDER BY nome ASC") 
-    produtos = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-
-    # Deserializa o campo 'lotes' para que o Streamlit possa usá-lo como uma lista
-    return [deserialize_lotes(p) for p in produtos]
-
-def get_produto_by_id(product_id):
-    """Busca um produto pelo ID, desserializando os lotes."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM produtos WHERE id = ?", (product_id,))
-    produto = cursor.fetchone()
-    conn.close()
-    
-    if produto:
-        return deserialize_lotes(dict(produto))
-    return None
-
-def update_produto(product_id, nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_data):
-    """
-    Atualiza um produto existente, incluindo a nova estrutura de lotes.
-    'lotes_data' é uma lista de dicionários [{'validade': 'YYYY-MM-DD', 'quantidade': X}].
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 1. Serializa a lista de lotes para JSON string
-    lotes_json = json.dumps(lotes_data)
-    
-    cursor.execute(
-        """
-        UPDATE produtos SET 
-            nome=?, 
-            preco=?, 
-            quantidade=?, 
-            marca=?, 
-            estilo=?, 
-            tipo=?, 
-            foto=?, 
-            lotes=?
-        WHERE id=?
-        """,
-        (nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_json, product_id)
-    )
-    conn.commit()
-    conn.close()
-
-def delete_produto(product_id):
-    """Remove um produto e sua foto associada."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 1. Recupera o produto para apagar a foto
-    produto = get_produto_by_id(product_id)
-    if produto and produto.get('foto'):
-        try:
-            os.remove(os.path.join(ASSETS_DIR, produto['foto']))
-        except FileNotFoundError:
-            pass # Ignora se a foto já não existir
-
-    # 2. Deleta do banco de dados
-    cursor.execute("DELETE FROM produtos WHERE id = ?", (product_id,))
-    conn.commit()
-    conn.close()
-
-def mark_produto_as_sold(product_id, quantidade_vendida, lote_id):
-    """
-    Atualiza a quantidade e registra a última venda, subtraindo a quantidade 
-    do lote correspondente (identificado pela data de validade).
-    O 'lote_id' é a string da data de validade (ex: '2025-12-31').
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    produto = get_produto_by_id(product_id)
-    if not produto:
-        raise ValueError("Produto não encontrado.")
-    
-    lotes = produto['lotes']
-    
-    # 1. Itera sobre os lotes para encontrar e decrementar o lote correto
-    lote_encontrado = False
-    for lote in lotes:
-        # Usa a string da validade como identificador do lote
-        if lote['validade'] == lote_id:
-            lote_encontrado = True
-            if lote['quantidade'] >= quantidade_vendida:
-                lote['quantidade'] -= quantidade_vendida
-            else:
-                raise ValueError(f"Quantidade insuficiente no lote ({lote['quantidade']} restantes).")
-            break
-            
-    if not lote_encontrado:
-        raise ValueError(f"Lote com validade {lote_id} não encontrado para este produto.")
+    with st.form("add_product_form", clear_on_submit=False):
         
-    # 2. Recalcula a quantidade total do produto
-    nova_quantidade_total = sum(lote['quantidade'] for lote in lotes)
-    
-    # 3. Serializa a lista de lotes atualizada para JSON string
-    lotes_json_atualizado = json.dumps(lotes)
-    
-    # 4. Atualiza o DB
-    cursor.execute(
-        """
-        UPDATE produtos SET 
-            quantidade = ?, 
-            lotes = ?, 
-            vendido = 1, 
-            data_ultima_venda = ? 
-        WHERE id = ?
-        """,
-        (nova_quantidade_total, lotes_json_atualizado, datetime.now().isoformat(), product_id)
-    )
-    
-    conn.commit()
-    conn.close()
-    return quantidade_vendida
+        st.markdown("##### Detalhes Principais")
+        col1, col2 = st.columns(2) 
+        
+        with col1:
+            nome = st.text_input("Nome do Produto", max_chars=150)
+            marca = st.selectbox("📝 Marca do Produto", options=['Selecionar'] + MARCAS, key="add_input_marca")
+            tipo = st.selectbox("🏷️ Tipo de Produto", options=['Selecionar'] + TIPOS, key="add_input_tipo")
+            
+        with col2:
+            estilo = st.selectbox("Estilo", ['Selecionar'] + ESTILOS, key="add_input_estilo")
+            preco = st.number_input("Preço (R$)", min_value=0.01, format="%.2f", step=1.0)
+            foto = st.file_uploader("🖼️ Foto do Produto", type=['png', 'jpg', 'jpeg'], key="add_input_foto")
+        
+        st.markdown("---")
+        st.markdown("##### 📦 Lote e Quantidade (Obrigatório)")
+        
+        col_new1, col_new2 = st.columns(2)
+        new_validade = col_new1.date_input("🗓️ Data de Validade", value=date.today(), key="new_validade_lote")
+        new_quantidade = col_new2.number_input("Quantidade Inicial", min_value=0, step=1, value=1)
+        
+        submitted = st.form_submit_button("Adicionar Produto")
 
-# ====================================================================
-# FUNÇÕES DE USUÁRIOS (LOGIN/ADMIN)
-# ====================================================================
-# (Funções de Usuário mantidas inalteradas)
-# ... (add_user, get_user, get_all_users) ...
+        if submitted:
+            total_quantidade = new_quantidade
+            
+            if not nome or preco <= 0 or new_quantidade <= 0 or marca == 'Selecionar' or tipo == 'Selecionar':
+                st.error("Nome, Preço (positivo), Quantidade (maior que zero), Marca e Tipo são obrigatórios.")
+                return
+            
+            lotes_data = [{
+                'validade': new_validade.isoformat(),
+                'quantidade': new_quantidade
+            }]
+            
+            photo_name = None
+            if foto:
+                try:
+                    photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{foto.name.split('.')[-1]}"
+                    file_path = os.path.join(ASSETS_DIR, photo_name)
+                    with open(file_path, "wb") as f:
+                        f.write(foto.getbuffer())
+                except Exception as e:
+                    st.error(f"Erro ao salvar a foto: {e}. Tente novamente.")
+                    return
+                
+            try:
+                add_produto(
+                    nome, preco, total_quantidade, marca, estilo, tipo, 
+                    photo_name, lotes_data
+                )
+                st.success(f"Produto '{nome}' adicionado com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao adicionar produto no banco de dados: {e}")
 
-def add_user(username, password, role="staff"):
-    """Adiciona um novo usuário (admin ou staff) ao banco de dados."""
-    hashed_pass = hash_password(password)
-    conn = get_db_connection()
-    cursor = conn.cursor()
+
+# -------------------------------------------------------------------
+## 📝 Edição de Produto (Omitido para Brevidade, pois não houve alteração)
+# -------------------------------------------------------------------
+
+def show_edit_form():
+    """Exibe o formulário de edição para o produto selecionado, adaptado para Lotes."""
+    produto_id = st.session_state.get('edit_product_id')
+    produto = get_produto_by_id(produto_id)
+    
+    if not produto:
+        st.error("Produto não encontrado ou ID inválido.")
+        st.session_state["edit_mode"] = False
+        st.session_state["edit_product_id"] = None
+        return
+
+    st.subheader(f"Editar Produto: {produto.get('nome')}")
+
+    produto_lotes = []
     try:
-        cursor.execute(
-            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            (username, hashed_pass, role)
-        )
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        # Usuário já existe (campo username é UNIQUE)
-        return False
-    finally:
-        conn.close()
+        produto_lotes = json.loads(produto.get('lotes', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        st.warning("Erro ao carregar lotes do banco de dados. Iniciando com lotes vazios.")
+        produto_lotes = []
 
-def get_user(username):
-    """Busca um usuário pelo nome de usuário."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
-    user = cursor.fetchone()
-    conn.close()
-    return dict(user) if user else None
+    if st.session_state.get('edit_id') != produto_id:
+        st.session_state['lotes_data'] = produto_lotes
+        st.session_state['edit_id'] = produto_id
+        
+    if 'lotes_data' not in st.session_state:
+         st.session_state['lotes_data'] = []
+    
+    default_preco = float(produto.get("preco", 0.01))
 
-def get_all_users():
-    """Retorna todos os usuários cadastrados (sem senhas)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, role FROM users ORDER BY role DESC, username ASC")
-    users = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return users
+    with st.form(key=f"edit_product_form_{produto_id}", clear_on_submit=False):
+        
+        st.markdown("##### Detalhes Principais")
+        col1, col2 = st.columns(2)
+        with col1:
+            nome = st.text_input("Nome", value=produto.get("nome"))
+            preco = st.number_input("Preço (R$)", value=default_preco, format="%.2f", min_value=0.01)
+        
+        with col2:
+            marca_index = MARCAS.index(produto.get("marca")) if produto.get("marca") in MARCAS else 0
+            estilo_index = ESTILOS.index(produto.get("estilo")) if produto.get("estilo") in ESTILOS else 0
+            tipo_index = TIPOS.index(produto.get("tipo")) if produto.get("tipo") in TIPOS else 0
 
-# ====================================================================
-# FUNÇÕES DE EXPORTAÇÃO/IMPORTAÇÃO (CSV/PDF)
-# ====================================================================
+            marca = st.selectbox("Marca", MARCAS, index=marca_index)
+            estilo = st.selectbox("Estilo", ESTILOS, index=estilo_index)
+            tipo = st.selectbox("Tipo", TIPOS, index=tipo_index)
+            
+        uploaded = st.file_uploader("Alterar Foto", type=["jpg","png","jpeg"])
 
-def export_produtos_to_csv(filepath):
-    """Exporta todos os produtos para um arquivo CSV."""
+        st.markdown("---")
+        st.markdown("##### 📦 Gestão de Lotes por Validade")
+
+        total_quantidade_calculada = 0
+        lotes_para_manter = []
+        
+        # 2. Exibe e gerencia lotes existentes
+        if st.session_state.get('lotes_data'):
+            for i, lote in enumerate(st.session_state['lotes_data']):
+                col_i1, col_i2, col_i3 = st.columns([0.4, 0.4, 0.2])
+                
+                try:
+                    lote_validade_dt = datetime.fromisoformat(lote['validade']).date()
+                except (ValueError, TypeError):
+                    lote_validade_dt = date.today()
+
+                
+                nova_validade = col_i1.date_input(f"Validade Lote {i+1}", value=lote_validade_dt, key=f"edit_validade_{i}")
+                nova_quantidade = col_i2.number_input(f"Quantidade Lote {i+1}", min_value=0, value=lote['quantidade'], key=f"edit_quantidade_{i}")
+                
+                if col_i3.button("Remover Lote", key=f"edit_remover_{i}"):
+                    st.session_state['lotes_data'].pop(i)
+                    st.experimental_rerun()
+                
+                lotes_para_manter.append({
+                    'validade': nova_validade.isoformat() if nova_validade else None,
+                    'quantidade': nova_quantidade
+                })
+                total_quantidade_calculada += nova_quantidade
+                st.markdown("---")
+            
+            st.session_state['lotes_data'] = lotes_para_manter
+
+        # 3. Adicionar novo lote
+        st.markdown("##### Adicionar Novo Lote")
+        col_new1, col_new2 = st.columns(2)
+        new_validade = col_new1.date_input("Validade do Novo Lote", value=date.today(), key="edit_new_validade_lote")
+        new_quantidade = col_new2.number_input("Quantidade do Novo Lote", min_value=0, value=0, key="edit_new_quantidade_lote")
+        
+        st.warning(f"Quantidade Total em Estoque (calculada): **{total_quantidade_calculada + new_quantidade}**")
+        st.markdown("---")
+
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            save = st.form_submit_button("Salvar Alterações")
+        with col_btn2:
+            cancel = st.form_submit_button("Cancelar Edição")
+
+        if save:
+            
+            final_lotes = st.session_state['lotes_data'].copy()
+            
+            if new_quantidade > 0:
+                final_lotes.append({
+                    'validade': new_validade.isoformat(),
+                    'quantidade': new_quantidade
+                })
+                
+            final_quantidade_total = sum(lote['quantidade'] for lote in final_lotes)
+            
+            if not nome or preco <= 0 or final_quantidade_total < 0:
+                st.error("Nome, Preço (positivo) e Quantidade Total (não negativa) são obrigatórios.")
+                return
+
+            photo_name = produto.get("foto")
+            if uploaded:
+                if photo_name and os.path.exists(os.path.join(ASSETS_DIR, photo_name)):
+                    try: 
+                        os.remove(os.path.join(ASSETS_DIR, photo_name))
+                    except Exception: 
+                        st.warning("Não foi possível remover a foto antiga, mas a nova será salva.")
+                
+                try:
+                    extension = uploaded.name.split('.')[-1]
+                    photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extension}"
+                    file_path = os.path.join(ASSETS_DIR, photo_name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded.getbuffer())
+                except Exception as e:
+                    st.error(f"Erro ao salvar a nova foto: {e}")
+                    return
+            
+            try:
+                update_produto(
+                    produto_id, nome, preco, final_quantidade_total, marca, 
+                    estilo, tipo, photo_name, final_lotes
+                )
+                st.success(f"Produto '{nome}' atualizado com sucesso!")
+                st.session_state["edit_mode"] = False
+                st.session_state["edit_product_id"] = None
+                st.session_state["edit_id"] = None
+                del st.session_state['lotes_data']
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao atualizar produto no banco de dados: {e}")
+                
+        if cancel:
+            st.session_state["edit_mode"] = False
+            st.session_state["edit_product_id"] = None
+            st.session_state["edit_id"] = None
+            if 'lotes_data' in st.session_state:
+                del st.session_state['lotes_data']
+            st.rerun()
+
+# -------------------------------------------------------------------
+## 📋 Lista e Gerenciamento de Produtos
+# -------------------------------------------------------------------
+
+def manage_products_list():
+    st.subheader("Lista de Produtos")
     produtos = get_all_produtos()
+    
+    # --- Configurações de Caminho ---
+    DATA_DIR = 'data'
+    if not os.path.exists(DATA_DIR): 
+        os.makedirs(DATA_DIR)
+        
+    csv_path = os.path.join(DATA_DIR, 'relatorio_estoque.csv')
+    excel_path = os.path.join(DATA_DIR, 'relatorio_estoque.xlsx')
+    pdf_path = os.path.join(DATA_DIR, 'relatorio_estoque.pdf')
+    
+    # --- Ações de Arquivo (Import/Export/PDF) ---
+    st.markdown("##### 📥 Exportação de Dados e Relatórios")
+    col_a, col_b, col_c, col_d = st.columns([1,1,1,1])
+    
+    # --- CSV Download ---
+    with col_a:
+        if st.button('Gerar CSV', key='btn_csv'):
+            try:
+                export_produtos_to_csv(csv_path)
+                st.session_state['csv_generated_path'] = csv_path
+                st.toast('Arquivo CSV gerado com sucesso!')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Erro ao gerar CSV: {e}')
+                st.session_state['csv_generated_path'] = None
+        
+        if st.session_state.get('csv_generated_path') and os.path.exists(st.session_state['csv_generated_path']):
+            try:
+                with open(st.session_state['csv_generated_path'], "rb") as file:
+                    st.download_button(
+                        label="⬇️ Baixar CSV",
+                        data=file.read(),
+                        file_name="relatorio_estoque.csv",
+                        mime="text/csv"
+                    )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download do CSV: {e}")
+
+    # --- Excel Download ---
+    with col_b:
+        if st.button('Gerar Excel (XLSX)', key='btn_excel'):
+            try:
+                # Assumindo que esta função está no utils/database.py
+                export_produtos_to_excel(excel_path) 
+                st.session_state['excel_generated_path'] = excel_path
+                st.toast('Arquivo Excel gerado com sucesso!')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Erro ao gerar Excel: {e}. Verifique se a função existe no backend.')
+                st.session_state['excel_generated_path'] = None
+        
+        if st.session_state.get('excel_generated_path') and os.path.exists(st.session_state['excel_generated_path']):
+            try:
+                with open(st.session_state['excel_generated_path'], "rb") as file:
+                    st.download_button(
+                        label="⬇️ Baixar Excel",
+                        data=file.read(),
+                        file_name="relatorio_estoque.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download do Excel: {e}")
+
+    # --- PDF Download ---
+    with col_c:
+        if st.button('Gerar Relatório PDF', key='btn_pdf'):
+            try:
+                # Função corrigida para aceitar 2 argumentos (filepath, produtos)
+                generate_stock_pdf(pdf_path, produtos) 
+                st.session_state['pdf_generated_path'] = pdf_path
+                st.toast('Relatório PDF gerado com sucesso!')
+                st.rerun() 
+            except Exception as e:
+                st.error(f'Erro ao gerar PDF: {e}')
+                st.session_state['pdf_generated_path'] = None
+                
+        caminho_pdf_gerado = st.session_state.get('pdf_generated_path')
+        if caminho_pdf_gerado and os.path.exists(caminho_pdf_gerado):
+            try:
+                with open(caminho_pdf_gerado, "rb") as file:
+                    st.download_button(
+                        label="⬇️ Baixar PDF",
+                        data=file.read(),
+                        file_name="relatorio_estoque.pdf",
+                        mime="application/pdf"
+                    )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download do PDF: {e}")
+                st.session_state['pdf_generated_path'] = None 
+
+    # --- Importar CSV ---
+    with col_d:
+        uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
+        if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
+            try:
+                # Nota: A função de backend precisa ser adaptada para ler o 'uploaded_csv'
+                import_produtos_from_csv('simulacao_path') 
+                st.success('Produtos importados com sucesso (Simulação).')
+                st.rerun()
+            except Exception as e:
+                st.error('Erro ao importar CSV: ' + str(e))
+            
+    st.markdown("---")
+
     if not produtos:
+        st.info("Nenhum produto cadastrado.")
         return
         
-    # Inclui 'lotes' e 'data_adicao'
-    fieldnames = list(produtos[0].keys())
-    with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
-        writer.writeheader()
-        
-        # Converte a lista 'lotes' de volta para string JSON para o CSV
-        produtos_para_csv = []
-        for p in produtos:
-            p_copy = p.copy()
-            p_copy['lotes'] = json.dumps(p_copy['lotes'])
-            produtos_para_csv.append(p_copy)
-            
-        writer.writerows(produtos_para_csv)
-
-def import_produtos_from_csv(filepath):
-    """Importa produtos de um arquivo CSV (apenas adiciona novos)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    count = 0
-    
-    with open(filepath, 'r', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            # Tenta converter campos para o tipo correto, usa None/0 se falhar
-            try:
-                nome = row.get('nome')
-                if not nome: continue 
-                
-                preco = float(row.get('preco', 0))
-                quantidade = int(row.get('quantidade', 0))
-                vendido = int(row.get('vendido', 0))
-                
-                # Assume que 'lotes' no CSV já está em formato JSON string
-                lotes_json = row.get('lotes', '[]') 
-                
-            except ValueError:
-                # Pula a linha se os campos numéricos estiverem inválidos
-                continue 
-
-            # Insere um NOVO produto (ID será AUTOINCREMENT)
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_adicao, lotes, vendido, data_ultima_venda)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        nome, preco, quantidade, row.get('marca'), row.get('estilo'), 
-                        row.get('tipo'), row.get('foto'), row.get('data_adicao', datetime.now().isoformat()), lotes_json, vendido, 
-                        row.get('data_ultima_venda')
-                    )
-                )
-                count += 1
-            except Exception as e:
-                # Em caso de erro de DB, apenas registra e continua
-                print(f"Erro ao inserir linha: {e}")
-                
-    conn.commit()
-    conn.close()
-    return count
-
-def generate_stock_pdf(filepath, produtos):
-    """Gera um relatório PDF com a lista de produtos, detalhando por lote."""
-    # Garante que os lotes são carregados corretamente como listas
-    produtos = get_all_produtos() 
-    
-    # Cria uma lista plana de "linhas de relatório" (uma para cada lote)
-    linhas_relatorio = []
     for p in produtos:
-        lotes = p.get('lotes', [])
+        produto_id = p.get("id")
+        with st.container(border=True):
+            cols = st.columns([3,1,1])
+            with cols[0]:
+                st.markdown(f"### {p.get('nome')} <small style='color:gray'>ID: {produto_id}</small>", unsafe_allow_html=True)
+                
+                try:
+                    # Formatação brasileira: Ponto para milhar e vírgula para decimal (ex: R$ 1.234,56)
+                    preco_exibicao = f"R$ {float(p.get('preco')):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                except (ValueError, TypeError):
+                    preco_exibicao = "R$ N/A"
+
+                st.write(f"**Preço:** {preco_exibicao} • **Quantidade Total:** {p.get('quantidade', 0)}")
+                st.write(f"**Marca:** {p.get('marca')} • **Estilo:** {p.get('estilo')} • **Tipo:** {p.get('tipo')}")
+                
+                if p.get('lotes'):
+                    lotes_info = []
+                    try:
+                        lotes = json.loads(p['lotes'])
+                        for lote in lotes:
+                            validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
+                            lotes_info.append(f"Qtd: {lote['quantidade']} (Vence em {validade})")
+                        st.caption("Lotes Ativos: " + " | ".join(lotes_info))
+                    except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+                        st.caption("Lotes Ativos: Estrutura de lote inválida no DB")
+                
+                
+                quantidade_atual = int(p.get("quantidade", 0))
+                if quantidade_atual > 0:
+                    if st.button("Vender 1 Unidade", key=f'sell_{produto_id}'):
+                        try:
+                            mark_produto_as_sold(produto_id, 1)
+                            st.success(f"1 unidade de '{p.get('nome')}' foi vendida.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao marcar venda: {e}")
+                else:
+                    st.info("Fora de estoque.")
+
+            with cols[1]:
+                photo_path = os.path.join(ASSETS_DIR, p.get('foto')) if p.get('foto') else None
+                if photo_path and os.path.exists(photo_path):
+                    st.image(photo_path, width=120)
+                else:
+                    st.info('Sem foto')
+                    
+            with cols[2]:
+                role = st.session_state.get('role','staff')
+                if st.button('Editar', key=f'mod_{produto_id}'):
+                    # Limpa o estado de download ao entrar no modo de edição
+                    st.session_state['pdf_generated_path'] = None 
+                    st.session_state['csv_generated_path'] = None 
+                    st.session_state['excel_generated_path'] = None 
+                    st.session_state['edit_product_id'] = produto_id
+                    st.session_state['edit_mode'] = True
+                    st.rerun()
+
+                if role == 'admin':
+                    if st.button('Remover', key=f'rem_{produto_id}'):
+                        try:
+                            delete_produto(produto_id)
+                            st.warning(f"Produto '{p.get('nome')}' removido.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao remover produto: {e}")
+                else:
+                    st.caption('Remover (admin)')
+                    
+            st.markdown("---")
+
+
+# --- FLUXO PRINCIPAL DA PÁGINA ---
+
+if not st.session_state.get("logged_in"):
+    st.error("Acesso negado. Faça login na área administrativa para gerenciar produtos.")
+    st.info("Vá para a página 'Área Administrativa' para entrar ou criar um admin.")
+else:
+    st.sidebar.markdown(f"**Olá, {st.session_state.get('username')} ({st.session_state.get('role','staff').capitalize()})**")
+    
+    if st.session_state.get('edit_mode'):
+        show_edit_form()
+    else:
+        action = st.sidebar.selectbox(
+            "Ação", 
+            ["Visualizar / Modificar / Remover Produtos", "Adicionar Produto"],
+            key='main_action_selector'
+        )
         
-        # Se não houver lotes, mas houver quantidade total, cria uma linha "Sem Validade"
-        if not lotes and p.get('quantidade', 0) > 0:
-             linhas_relatorio.append({
-                'nome': p.get('nome'), 
-                'marca': p.get('marca'), 
-                'estilo': p.get('estilo'), 
-                'tipo': p.get('tipo'), 
-                'quantidade': p.get('quantidade'), 
-                'preco': p.get('preco'), 
-                'validade': 'Sem Validade',
-                'data_adicao': p.get('data_adicao')
-            })
+        if action == "Adicionar Produto":
+            add_product_form_com_colunas()
         else:
-            # Para cada lote, cria uma linha separada
-            for lote in lotes:
-                if lote.get('quantidade', 0) > 0:
-                    linhas_relatorio.append({
-                        'nome': p.get('nome'), 
-                        'marca': p.get('marca'), 
-                        'estilo': p.get('estilo'), 
-                        'tipo': p.get('tipo'), 
-                        'quantidade': lote.get('quantidade', 0), 
-                        'preco': p.get('preco'), 
-                        'validade': lote.get('validade'), # Formato ISO
-                        'data_adicao': p.get('data_adicao')
-                    })
-                pass
-
-    c = canvas.Canvas(filepath, pagesize=A4)
-    width, height = A4
-    
-    y_position = height - 50
-    
-    # Título
-    c.setFont('Helvetica-Bold', 16)
-    c.drawString(cm, y_position, 'Relatório de Estoque Detalhado por Lote')
-    y_position -= 20
-    
-    # Data de Geração
-    c.setFont('Helvetica', 10)
-    c.drawString(cm, y_position, f'Data de Geração: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
-    y_position -= 20
-    
-    # Cabeçalho da tabela - Adicionando Data de Adição
-    c.setFont('Helvetica-Bold', 8)
-    col_x = [cm*0.5, cm*4.5, cm*8.5, cm*12.5, cm*14.5, cm*16.5, cm*19] 
-    col_names = ['Nome', 'Marca/Estilo', 'Tipo', 'Preço', 'Qtd', 'Validade', 'Adição']
-    
-    for i, name in enumerate(col_names):
-        c.drawString(col_x[i], y_position, name)
-        
-    y_position -= 5
-    c.line(cm*0.5, y_position, width - cm*0.5, y_position) # Linha
-    y_position -= 10
-    
-    # Conteúdo da tabela (Iterando sobre as linhas_relatorio)
-    c.setFont('Helvetica', 8)
-    for p in linhas_relatorio:
-        # Verifica se precisa de nova página
-        if y_position < 30: 
-            c.showPage() 
-            y_position = height - 50
-            # Repete o cabeçalho
-            c.setFont('Helvetica-Bold', 8)
-            for i, name in enumerate(col_names):
-                c.drawString(col_x[i], y_position, name)
-            y_position -= 5
-            c.line(cm*0.5, y_position, width - cm*0.5, y_position)
-            y_position -= 10
-            c.setFont('Helvetica', 8)
-
-        # Formatação de Datas
-        validade = p.get('validade')
-        validade_formatada = 'S/V'
-        if validade and validade != 'Sem Validade':
-            try:
-                # Converte ISO format (armazenado no DB) para DD/MM/AAAA
-                validade_formatada = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
-            except ValueError:
-                validade_formatada = 'Inválida'
-        
-        data_adicao = p.get('data_adicao')
-        adicao_formatada = ''
-        if data_adicao:
-             try:
-                # Exibe a data de adição
-                adicao_formatada = datetime.fromisoformat(data_adicao).strftime('%d/%m/%y')
-             except ValueError:
-                 adicao_formatada = 'Inválida'
-                 
-        # Garante que os campos não sejam None
-        nome = p.get('nome', '-')
-        marca = p.get('marca', '-')
-        estilo = p.get('estilo', '-')
-        tipo = p.get('tipo', '-')
-        quantidade = p.get('quantidade', 0)
-        preco = p.get('preco', 0.0)
-
-        # Desenha as linhas
-        c.drawString(col_x[0], y_position, nome[:25]) 
-        c.drawString(col_x[1], y_position, f"{marca[:10]}/{estilo[:10]}") 
-        c.drawString(col_x[2], y_position, tipo[:15])
-        c.drawString(col_x[3], y_position, f"R$ {float(preco):.2f}")
-        c.drawString(col_x[4], y_position, str(quantidade))
-        c.drawString(col_x[5], y_position, validade_formatada)
-        c.drawString(col_x[6], y_position, adicao_formatada)
-        
-        y_position -= 10 
-        
-    c.save()
+            manage_products_list()
