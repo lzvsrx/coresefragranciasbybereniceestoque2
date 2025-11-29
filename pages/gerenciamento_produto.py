@@ -656,4 +656,34 @@ else:
         if action == "Adicionar Produto":
             add_product_form_com_colunas()
         else:
+
             manage_products_list()
+def update_produto(product_id, nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_data):
+    """
+    Atualiza um produto existente, incluindo a nova estrutura de lotes.
+    'lotes_data' é uma lista de dicionários [{'validade': 'YYYY-MM-DD', 'quantidade': X}].
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 1. Serializa a lista de lotes para JSON string
+    lotes_json = json.dumps(lotes_data)
+    
+    cursor.execute(
+        """
+        UPDATE produtos SET 
+            nome=?, 
+            preco=?, 
+            quantidade=?, 
+            marca=?, 
+            estilo=?, 
+            tipo=?, 
+            foto=?, 
+            lotes=?
+            -- data_adicao não é atualizada, permanece a original
+        WHERE id=?
+        """,
+        (nome, preco, quantidade_total, marca, estilo, tipo, foto, lotes_json, product_id)
+    )
+    conn.commit()
+    conn.close()
