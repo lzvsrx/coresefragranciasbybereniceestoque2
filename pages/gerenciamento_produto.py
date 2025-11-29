@@ -30,12 +30,11 @@ if 'role' not in st.session_state: st.session_state['role'] = 'staff'
 if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
 if 'edit_product_id' not in st.session_state: st.session_state['edit_product_id'] = None
 if 'lotes_data' not in st.session_state: st.session_state['lotes_data'] = []
-# Variável para controlar o botão de download do PDF
 if 'pdf_generated_path' not in st.session_state: st.session_state['pdf_generated_path'] = None 
 
 
 # -------------------------------------------------------------------
-# FUNÇÃO DE CADASTRO DE PRODUTO
+## 📦 Cadastro de Novo Produto
 # -------------------------------------------------------------------
 def add_product_form_com_colunas():
     st.subheader("Adicionar Novo Produto")
@@ -104,7 +103,7 @@ def add_product_form_com_colunas():
 
 
 # -------------------------------------------------------------------
-# FUNÇÕES DE EDIÇÃO E LISTAGEM
+## 📝 Edição de Produto
 # -------------------------------------------------------------------
 
 def show_edit_form():
@@ -259,9 +258,13 @@ def show_edit_form():
                 del st.session_state['lotes_data']
             st.rerun()
 
+# -------------------------------------------------------------------
+## 📋 Lista e Gerenciamento de Produtos
+# -------------------------------------------------------------------
+
 def manage_products_list():
     st.subheader("Lista de Produtos")
-    produtos = get_all_produtos()
+    produtos = get_all_produtos() # Assume que esta função retorna também os históricos de adição e venda
     
     # --- Ações de Arquivo (Import/Export/PDF) ---
     col_a, col_b, col_c = st.columns(3)
@@ -295,13 +298,13 @@ def manage_products_list():
         # 1. Botão para gerar o PDF
         if st.button('Gerar Relatório PDF', key='btn_pdf'):
             try:
-                # PASSA A LISTA DE PRODUTOS PARA A FUNÇÃO DE GERAÇÃO DE PDF
+                # CORREÇÃO: Passando 2 argumentos, AGORA ESPERADO PELO generate_stock_pdf no backend
                 generate_stock_pdf(pdf_path, produtos) 
                 st.session_state['pdf_generated_path'] = pdf_path
                 st.toast('Relatório PDF gerado com sucesso!')
                 st.rerun() 
             except Exception as e:
-                st.error('Erro ao gerar PDF: ' + str(e))
+                st.error(f'Erro ao gerar PDF: {e}')
                 if 'pdf_generated_path' in st.session_state:
                     del st.session_state['pdf_generated_path']
 
