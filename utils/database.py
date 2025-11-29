@@ -402,7 +402,7 @@ def import_produtos_from_csv(filepath):
     conn.close()
     return count
 
-def generate_stock_pdf(pdf_path,produtos):
+def generate_stock_pdf(pdf_path, produtos):
     """Gera um relatório PDF com a lista de produtos, detalhando por lote."""
     # Garante que os lotes são carregados corretamente como listas
     produtos = get_all_produtos() 
@@ -438,7 +438,7 @@ def generate_stock_pdf(pdf_path,produtos):
                         'validade': lote.get('validade'), # Formato ISO
                         'data_adicao': p.get('data_adicao')
                     })
-
+                pass
 
     c = canvas.Canvas(filepath, pagesize=A4)
     width, height = A4
