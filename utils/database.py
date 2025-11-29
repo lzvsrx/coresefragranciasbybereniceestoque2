@@ -402,7 +402,7 @@ def import_produtos_from_csv(filepath):
     conn.close()
     return count
 
-def generate_stock_pdf(pdf_path, produtos):
+def generate_stock_pdf(pdf_path, produtos, filepath):
     """Gera um relatório PDF com a lista de produtos, detalhando por lote."""
     # Garante que os lotes são carregados corretamente como listas
     produtos = get_all_produtos() 
