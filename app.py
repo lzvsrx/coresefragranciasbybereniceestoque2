@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 from utils.database import create_tables
+import base64
+from utils.database import generate_stock_pdf
 
 
 # Inicializa o banco de dados e as tabelas
