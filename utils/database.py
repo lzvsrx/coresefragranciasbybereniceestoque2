@@ -1,4 +1,6 @@
 import sqlite3
+import base64
+from utils.database import generate_stock_pdf
 import os
 import hashlib
 import csv
@@ -424,3 +426,20 @@ def generate_stock_pdf(filepath):
         y_position -= 10 # Reduz o espaçamento entre linhas
         
     c.save()
+    def get_binary_file_downloader_html(file_path, file_label='Baixar PDF de Estoque'):
+    # ... (código da função Base64) ...
+    pass
+    if st.button('Gerar Relatório de Estoque'):
+    PDF_FILE_PATH = "Relatorio_Estoque.pdf"
+    
+    try:
+        # Chama a função que salva o PDF no disco
+        generate_stock_pdf(PDF_FILE_PATH) 
+        
+        # Gera e exibe o botão de download
+        download_link_html = get_binary_file_downloader_html(PDF_FILE_PATH, '📥 Baixar Relatório PDF')
+        st.markdown(download_link_html, unsafe_allow_html=True)
+        st.success("Relatório gerado com sucesso!")
+        
+    except Exception as e:
+        st.error(f"Erro ao gerar o PDF: {e}")
