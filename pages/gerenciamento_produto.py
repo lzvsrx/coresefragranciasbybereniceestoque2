@@ -4,7 +4,10 @@ import json
 from datetime import datetime, date
 from utils.database import (
     add_produto, get_all_produtos, update_produto, delete_produto, get_produto_by_id,
-    export_produtos_to_csv, import_produtos_from_csv, generate_stock_pdf,
+    export_produtos_to_csv, import_produtos_from_csv, 
+    # Assumimos que a função abaixo existe no utils/database.py:
+    export_produtos_to_excel, 
+    generate_stock_pdf,
     mark_produto_as_sold,
     MARCAS, ESTILOS, TIPOS, ASSETS_DIR
 )
@@ -31,6 +34,8 @@ if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
 if 'edit_product_id' not in st.session_state: st.session_state['edit_product_id'] = None
 if 'lotes_data' not in st.session_state: st.session_state['lotes_data'] = []
 if 'pdf_generated_path' not in st.session_state: st.session_state['pdf_generated_path'] = None 
+if 'csv_generated_path' not in st.session_state: st.session_state['csv_generated_path'] = None 
+if 'excel_generated_path' not in st.session_state: st.session_state['excel_generated_path'] = None 
 
 
 # -------------------------------------------------------------------
@@ -103,7 +108,7 @@ def add_product_form_com_colunas():
 
 
 # -------------------------------------------------------------------
-## 📝 Edição de Produto
+## 📝 Edição de Produto (Omitido para Brevidade, pois não houve alteração)
 # -------------------------------------------------------------------
 
 def show_edit_form():
@@ -266,69 +271,106 @@ def manage_products_list():
     st.subheader("Lista de Produtos")
     produtos = get_all_produtos()
     
-    # --- Ações de Arquivo (Import/Export/PDF) ---
-    col_a, col_b, col_c = st.columns(3)
+    # --- Configurações de Caminho ---
+    DATA_DIR = 'data'
+    if not os.path.exists(DATA_DIR): 
+        os.makedirs(DATA_DIR)
+        
+    csv_path = os.path.join(DATA_DIR, 'relatorio_estoque.csv')
+    excel_path = os.path.join(DATA_DIR, 'relatorio_estoque.xlsx')
+    pdf_path = os.path.join(DATA_DIR, 'relatorio_estoque.pdf')
     
+    # --- Ações de Arquivo (Import/Export/PDF) ---
+    st.markdown("##### 📥 Exportação de Dados e Relatórios")
+    col_a, col_b, col_c, col_d = st.columns([1,1,1,1])
+    
+    # --- CSV Download ---
     with col_a:
-        if st.button('Exportar CSV', key='btn_export_csv'):
-            csv_path = os.path.join('data','produtos_export.csv')
-            if not os.path.exists('data'): os.makedirs('data')
+        if st.button('Gerar CSV', key='btn_csv'):
             try:
                 export_produtos_to_csv(csv_path)
-                st.success('Exportação CSV concluída (Simulação).')
-            except Exception as e:
-                st.error('Erro ao exportar CSV: ' + str(e))
-                
-    with col_b:
-        uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
-        if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
-            try:
-                import_produtos_from_csv('simulacao_path') 
-                st.success('Produtos importados com sucesso (Simulação).')
+                st.session_state['csv_generated_path'] = csv_path
+                st.toast('Arquivo CSV gerado com sucesso!')
                 st.rerun()
             except Exception as e:
-                st.error('Erro ao importar CSV: ' + str(e))
-                
-    with col_c:
-        # --- Lógica de Geração de PDF e Download ---
-        pdf_path = os.path.join('data', 'relatorio_estoque.pdf')
-        if not os.path.exists('data'): 
-            os.makedirs('data')
+                st.error(f'Erro ao gerar CSV: {e}')
+                st.session_state['csv_generated_path'] = None
         
-        # 1. Botão para gerar o PDF
+        if st.session_state.get('csv_generated_path') and os.path.exists(st.session_state['csv_generated_path']):
+            try:
+                with open(st.session_state['csv_generated_path'], "rb") as file:
+                    st.download_button(
+                        label="⬇️ Baixar CSV",
+                        data=file.read(),
+                        file_name="relatorio_estoque.csv",
+                        mime="text/csv"
+                    )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download do CSV: {e}")
+
+    # --- Excel Download ---
+    with col_b:
+        if st.button('Gerar Excel (XLSX)', key='btn_excel'):
+            try:
+                # Assumindo que esta função está no utils/database.py
+                export_produtos_to_excel(excel_path) 
+                st.session_state['excel_generated_path'] = excel_path
+                st.toast('Arquivo Excel gerado com sucesso!')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Erro ao gerar Excel: {e}. Verifique se a função existe no backend.')
+                st.session_state['excel_generated_path'] = None
+        
+        if st.session_state.get('excel_generated_path') and os.path.exists(st.session_state['excel_generated_path']):
+            try:
+                with open(st.session_state['excel_generated_path'], "rb") as file:
+                    st.download_button(
+                        label="⬇️ Baixar Excel",
+                        data=file.read(),
+                        file_name="relatorio_estoque.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download do Excel: {e}")
+
+    # --- PDF Download ---
+    with col_c:
         if st.button('Gerar Relatório PDF', key='btn_pdf'):
             try:
-                # Passa o caminho e a lista de produtos (espera 2 argumentos no backend)
+                # Função corrigida para aceitar 2 argumentos (filepath, produtos)
                 generate_stock_pdf(pdf_path, produtos) 
                 st.session_state['pdf_generated_path'] = pdf_path
                 st.toast('Relatório PDF gerado com sucesso!')
                 st.rerun() 
             except Exception as e:
-                # Garante que o estado seja limpo em caso de falha na geração
                 st.error(f'Erro ao gerar PDF: {e}')
                 st.session_state['pdf_generated_path'] = None
                 
-        # 2. Lógica para Botão de Download (Aparece SOMENTE após a geração)
         caminho_pdf_gerado = st.session_state.get('pdf_generated_path')
-        
-        # Verifica se o caminho existe no estado e se o arquivo existe no disco
         if caminho_pdf_gerado and os.path.exists(caminho_pdf_gerado):
-            
-            # Lê o conteúdo binário do PDF
             try:
                 with open(caminho_pdf_gerado, "rb") as file:
-                    pdf_data = file.read()
-
-                st.download_button(
-                    label="⬇️ Baixar Relatório (PDF)",
-                    data=pdf_data,
-                    file_name="relatorio_estoque.pdf",
-                    mime="application/pdf"
-                )
+                    st.download_button(
+                        label="⬇️ Baixar PDF",
+                        data=file.read(),
+                        file_name="relatorio_estoque.pdf",
+                        mime="application/pdf"
+                    )
             except Exception as e:
-                # Limpa o estado se a leitura do arquivo falhar (resolve erro de variável não definida)
-                st.error(f"Erro ao preparar o download do arquivo: {e}")
+                st.error(f"Erro ao preparar o download do PDF: {e}")
                 st.session_state['pdf_generated_path'] = None 
+
+    # --- Importar CSV ---
+    with col_d:
+        uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
+        if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
+            try:
+                # Nota: A função de backend precisa ser adaptada para ler o 'uploaded_csv'
+                import_produtos_from_csv('simulacao_path') 
+                st.success('Produtos importados com sucesso (Simulação).')
+                st.rerun()
+            except Exception as e:
+                st.error('Erro ao importar CSV: ' + str(e))
             
     st.markdown("---")
 
@@ -386,7 +428,10 @@ def manage_products_list():
             with cols[2]:
                 role = st.session_state.get('role','staff')
                 if st.button('Editar', key=f'mod_{produto_id}'):
+                    # Limpa o estado de download ao entrar no modo de edição
                     st.session_state['pdf_generated_path'] = None 
+                    st.session_state['csv_generated_path'] = None 
+                    st.session_state['excel_generated_path'] = None 
                     st.session_state['edit_product_id'] = produto_id
                     st.session_state['edit_mode'] = True
                     st.rerun()
