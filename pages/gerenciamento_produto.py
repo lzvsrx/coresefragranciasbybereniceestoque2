@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import shutil
 import json
 from datetime import datetime, date
 from utils.database import (
@@ -13,6 +12,7 @@ from utils.database import (
 # --- Configurações Iniciais e CSS ---
 def load_css(file_name):
     """Carrega e aplica o CSS personalizado, se o arquivo existir."""
+    # Garante que o arquivo de estilo exista
     if not os.path.exists(file_name):
         return
     try:
@@ -23,7 +23,7 @@ def load_css(file_name):
 
 load_css("style.css")
 
-st.set_page_config(page_title="Gerenciar Produtos - Cores e Fragrâncias")
+st.set_page_config(page_title="Gerenciar Produtos - Cores e Fragrâncias", layout="wide")
 
 # Inicialização de estado
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -31,6 +31,9 @@ if 'role' not in st.session_state: st.session_state['role'] = 'staff'
 if 'edit_mode' not in st.session_state: st.session_state['edit_mode'] = False
 if 'edit_product_id' not in st.session_state: st.session_state['edit_product_id'] = None
 if 'lotes_data' not in st.session_state: st.session_state['lotes_data'] = []
+# Variável para controlar o botão de download do PDF
+if 'pdf_generated_path' not in st.session_state: st.session_state['pdf_generated_path'] = None 
+
 
 # -------------------------------------------------------------------
 # FUNÇÃO DE CADASTRO DE PRODUTO
@@ -41,6 +44,7 @@ def add_product_form_com_colunas():
     if not os.path.exists(ASSETS_DIR):
         os.makedirs(ASSETS_DIR)
     
+    # Limpa dados de lote anteriores ao iniciar um novo cadastro
     st.session_state['lotes_data'] = []
     
     with st.form("add_product_form", clear_on_submit=False):
@@ -55,6 +59,7 @@ def add_product_form_com_colunas():
             
         with col2:
             estilo = st.selectbox("Estilo", ['Selecionar'] + ESTILOS, key="add_input_estilo")
+            # Define o formato de exibição do preço
             preco = st.number_input("Preço (R$)", min_value=0.01, format="%.2f", step=1.0)
             foto = st.file_uploader("🖼️ Foto do Produto", type=['png', 'jpg', 'jpeg'], key="add_input_foto")
         
@@ -102,7 +107,7 @@ def add_product_form_com_colunas():
 
 
 # -------------------------------------------------------------------
-# FUNÇÕES DE EDIÇÃO E LISTAGEM
+# FUNÇÃO DE EDIÇÃO E LISTAGEM
 # -------------------------------------------------------------------
 
 def show_edit_form():
@@ -143,6 +148,7 @@ def show_edit_form():
             preco = st.number_input("Preço (R$)", value=default_preco, format="%.2f", min_value=0.01)
         
         with col2:
+            # Encontra o índice dos valores atuais para selecionar no selectbox
             marca_index = MARCAS.index(produto.get("marca")) if produto.get("marca") in MARCAS else 0
             estilo_index = ESTILOS.index(produto.get("estilo")) if produto.get("estilo") in ESTILOS else 0
             tipo_index = TIPOS.index(produto.get("tipo")) if produto.get("tipo") in TIPOS else 0
@@ -175,6 +181,7 @@ def show_edit_form():
                 
                 if col_i3.button("Remover Lote", key=f"edit_remover_{i}"):
                     st.session_state['lotes_data'].pop(i)
+                    # Força o Streamlit a re-renderizar o formulário com o lote removido
                     st.experimental_rerun()
                 
                 lotes_para_manter.append({
@@ -219,12 +226,14 @@ def show_edit_form():
 
             photo_name = produto.get("foto")
             if uploaded:
+                # Remove a foto antiga
                 if photo_name and os.path.exists(os.path.join(ASSETS_DIR, photo_name)):
                     try: 
                         os.remove(os.path.join(ASSETS_DIR, photo_name))
                     except Exception: 
                         st.warning("Não foi possível remover a foto antiga, mas a nova será salva.")
                 
+                # Salva a nova foto
                 try:
                     extension = uploaded.name.split('.')[-1]
                     photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extension}"
@@ -241,6 +250,7 @@ def show_edit_form():
                     estilo, tipo, photo_name, final_lotes
                 )
                 st.success(f"Produto '{nome}' atualizado com sucesso!")
+                # Reseta o estado de edição
                 st.session_state["edit_mode"] = False
                 st.session_state["edit_product_id"] = None
                 st.session_state["edit_id"] = None
@@ -250,10 +260,12 @@ def show_edit_form():
                 st.error(f"Erro ao atualizar produto no banco de dados: {e}")
                 
         if cancel:
+            # Reseta o estado de edição
             st.session_state["edit_mode"] = False
             st.session_state["edit_product_id"] = None
             st.session_state["edit_id"] = None
-            del st.session_state['lotes_data']
+            if 'lotes_data' in st.session_state:
+                del st.session_state['lotes_data']
             st.rerun()
 
 def manage_products_list():
@@ -277,6 +289,7 @@ def manage_products_list():
         uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
         if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
             try:
+                # Nota: A função de backend (import_produtos_from_csv) precisa ser adaptada para ler o 'uploaded_csv'
                 import_produtos_from_csv('simulacao_path') 
                 st.success('Produtos importados com sucesso (Simulação).')
                 st.rerun()
@@ -284,15 +297,42 @@ def manage_products_list():
                 st.error('Erro ao importar CSV: ' + str(e))
                 
     with col_c:
+        # --- Lógica de Geração de PDF e Download ---
+        pdf_path = os.path.join('data', 'relatorio_estoque.pdf')
+        if not os.path.exists('data'): 
+            os.makedirs('data')
+        
+        # 1. Botão para gerar o PDF
         if st.button('Gerar Relatório PDF', key='btn_pdf'):
-            pdf_path = os.path.join('data','relatorio_estoque.pdf')
-            if not os.path.exists('data'): os.makedirs('data')
             try:
+                # Chama a função de backend que cria o arquivo no caminho 'pdf_path'
                 generate_stock_pdf(pdf_path)
-                st.success('PDF gerado (Simulação).')
+                st.session_state['pdf_generated_path'] = pdf_path
+                st.toast('Relatório PDF gerado com sucesso!')
+                st.rerun() # Reruns para o botão de download aparecer
             except Exception as e:
                 st.error('Erro ao gerar PDF: ' + str(e))
-    
+                if 'pdf_generated_path' in st.session_state:
+                    del st.session_state['pdf_generated_path']
+
+
+        # 2. Lógica para Botão de Download (Aparece SOMENTE após a geração)
+        if st.session_state.get('pdf_generated_path') and os.path.exists(st.session_state['pdf_generated_path']):
+            
+            # Lê o conteúdo binário do PDF
+            try:
+                with open(st.session_state['pdf_generated_path'], "rb") as file:
+                    pdf_data = file.read()
+
+                st.download_button(
+                    label="⬇️ Baixar Relatório (PDF)",
+                    data=pdf_data,
+                    file_name="relatorio_estoque.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.error(f"Erro ao preparar o download: {e}")
+            
     st.markdown("---")
 
     if not produtos:
@@ -307,6 +347,7 @@ def manage_products_list():
                 st.markdown(f"### {p.get('nome')} <small style='color:gray'>ID: {produto_id}</small>", unsafe_allow_html=True)
                 
                 try:
+                    # Formatação brasileira: Ponto para milhar e vírgula para decimal (ex: R$ 1.234,56)
                     preco_exibicao = f"R$ {float(p.get('preco')):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
                 except (ValueError, TypeError):
                     preco_exibicao = "R$ N/A"
@@ -348,6 +389,8 @@ def manage_products_list():
             with cols[2]:
                 role = st.session_state.get('role','staff')
                 if st.button('Editar', key=f'mod_{produto_id}'):
+                    # Limpa o estado do PDF ao entrar no modo de edição
+                    st.session_state['pdf_generated_path'] = None 
                     st.session_state['edit_product_id'] = produto_id
                     st.session_state['edit_mode'] = True
                     st.rerun()
@@ -377,6 +420,7 @@ else:
     if st.session_state.get('edit_mode'):
         show_edit_form()
     else:
+        # Seleção de ação na barra lateral
         action = st.sidebar.selectbox(
             "Ação", 
             ["Visualizar / Modificar / Remover Produtos", "Adicionar Produto"],
@@ -387,4 +431,3 @@ else:
             add_product_form_com_colunas()
         else:
             manage_products_list()
-        
