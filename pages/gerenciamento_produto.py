@@ -12,7 +12,6 @@ from utils.database import (
 # --- Configurações Iniciais e CSS ---
 def load_css(file_name):
     """Carrega e aplica o CSS personalizado, se o arquivo existir."""
-    # Garante que o arquivo de estilo exista
     if not os.path.exists(file_name):
         return
     try:
@@ -44,7 +43,6 @@ def add_product_form_com_colunas():
     if not os.path.exists(ASSETS_DIR):
         os.makedirs(ASSETS_DIR)
     
-    # Limpa dados de lote anteriores ao iniciar um novo cadastro
     st.session_state['lotes_data'] = []
     
     with st.form("add_product_form", clear_on_submit=False):
@@ -59,7 +57,6 @@ def add_product_form_com_colunas():
             
         with col2:
             estilo = st.selectbox("Estilo", ['Selecionar'] + ESTILOS, key="add_input_estilo")
-            # Define o formato de exibição do preço
             preco = st.number_input("Preço (R$)", min_value=0.01, format="%.2f", step=1.0)
             foto = st.file_uploader("🖼️ Foto do Produto", type=['png', 'jpg', 'jpeg'], key="add_input_foto")
         
@@ -107,7 +104,7 @@ def add_product_form_com_colunas():
 
 
 # -------------------------------------------------------------------
-# FUNÇÃO DE EDIÇÃO E LISTAGEM
+# FUNÇÕES DE EDIÇÃO E LISTAGEM
 # -------------------------------------------------------------------
 
 def show_edit_form():
@@ -148,7 +145,6 @@ def show_edit_form():
             preco = st.number_input("Preço (R$)", value=default_preco, format="%.2f", min_value=0.01)
         
         with col2:
-            # Encontra o índice dos valores atuais para selecionar no selectbox
             marca_index = MARCAS.index(produto.get("marca")) if produto.get("marca") in MARCAS else 0
             estilo_index = ESTILOS.index(produto.get("estilo")) if produto.get("estilo") in ESTILOS else 0
             tipo_index = TIPOS.index(produto.get("tipo")) if produto.get("tipo") in TIPOS else 0
@@ -181,7 +177,6 @@ def show_edit_form():
                 
                 if col_i3.button("Remover Lote", key=f"edit_remover_{i}"):
                     st.session_state['lotes_data'].pop(i)
-                    # Força o Streamlit a re-renderizar o formulário com o lote removido
                     st.experimental_rerun()
                 
                 lotes_para_manter.append({
@@ -226,14 +221,12 @@ def show_edit_form():
 
             photo_name = produto.get("foto")
             if uploaded:
-                # Remove a foto antiga
                 if photo_name and os.path.exists(os.path.join(ASSETS_DIR, photo_name)):
                     try: 
                         os.remove(os.path.join(ASSETS_DIR, photo_name))
                     except Exception: 
                         st.warning("Não foi possível remover a foto antiga, mas a nova será salva.")
                 
-                # Salva a nova foto
                 try:
                     extension = uploaded.name.split('.')[-1]
                     photo_name = f"{nome.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extension}"
@@ -250,7 +243,6 @@ def show_edit_form():
                     estilo, tipo, photo_name, final_lotes
                 )
                 st.success(f"Produto '{nome}' atualizado com sucesso!")
-                # Reseta o estado de edição
                 st.session_state["edit_mode"] = False
                 st.session_state["edit_product_id"] = None
                 st.session_state["edit_id"] = None
@@ -260,7 +252,6 @@ def show_edit_form():
                 st.error(f"Erro ao atualizar produto no banco de dados: {e}")
                 
         if cancel:
-            # Reseta o estado de edição
             st.session_state["edit_mode"] = False
             st.session_state["edit_product_id"] = None
             st.session_state["edit_id"] = None
@@ -289,7 +280,6 @@ def manage_products_list():
         uploaded_csv = st.file_uploader('Importar CSV', type=['csv'], key='import_csv')
         if uploaded_csv is not None and st.button('Processar Importação', key='btn_import'):
             try:
-                # Nota: A função de backend (import_produtos_from_csv) precisa ser adaptada para ler o 'uploaded_csv'
                 import_produtos_from_csv('simulacao_path') 
                 st.success('Produtos importados com sucesso (Simulação).')
                 st.rerun()
@@ -305,11 +295,11 @@ def manage_products_list():
         # 1. Botão para gerar o PDF
         if st.button('Gerar Relatório PDF', key='btn_pdf'):
             try:
-                # Chama a função de backend que cria o arquivo no caminho 'pdf_path'
-                generate_stock_pdf(pdf_path)
+                # PASSA A LISTA DE PRODUTOS PARA A FUNÇÃO DE GERAÇÃO DE PDF
+                generate_stock_pdf(pdf_path, produtos) 
                 st.session_state['pdf_generated_path'] = pdf_path
                 st.toast('Relatório PDF gerado com sucesso!')
-                st.rerun() # Reruns para o botão de download aparecer
+                st.rerun() 
             except Exception as e:
                 st.error('Erro ao gerar PDF: ' + str(e))
                 if 'pdf_generated_path' in st.session_state:
@@ -389,7 +379,6 @@ def manage_products_list():
             with cols[2]:
                 role = st.session_state.get('role','staff')
                 if st.button('Editar', key=f'mod_{produto_id}'):
-                    # Limpa o estado do PDF ao entrar no modo de edição
                     st.session_state['pdf_generated_path'] = None 
                     st.session_state['edit_product_id'] = produto_id
                     st.session_state['edit_mode'] = True
@@ -420,7 +409,6 @@ else:
     if st.session_state.get('edit_mode'):
         show_edit_form()
     else:
-        # Seleção de ação na barra lateral
         action = st.sidebar.selectbox(
             "Ação", 
             ["Visualizar / Modificar / Remover Produtos", "Adicionar Produto"],
