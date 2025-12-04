@@ -91,6 +91,10 @@ def add_product_form():
 # -------------------------------------------------------------------
 # FUNÇÃO DE EDIÇÃO 
 # -------------------------------------------------------------------
+def load_css(file_name="style.css"):
+    if os.path.exists(file_name):
+        with open(file_name, encoding='utf-8') as f: 
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 def show_edit_form():
     """Exibe o formulário de edição para o produto selecionado."""
     produto_id = st.session_state.get('edit_product_id')
@@ -334,3 +338,4 @@ else:
         add_product_form()
     else:
         manage_products_list_actions()
+
