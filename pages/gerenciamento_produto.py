@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import json
 from datetime import datetime, date
-from utils.database import (
+from database import (
     add_produto, get_all_produtos, update_produto, delete_produto, get_produto_by_id,
     export_produtos_to_csv, import_produtos_from_csv, 
     # Assumimos que a função abaixo existe no utils/database.py:
@@ -471,3 +471,4 @@ else:
             add_product_form_com_colunas()
         else:
             manage_products_list()
+
