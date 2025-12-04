@@ -1,3 +1,8 @@
+# ====================================================================
+# ARQUIVO: utils/database.py
+# Contém as funções de DB (SQLite), Hash, CRUD, Login e Exportação.
+# ====================================================================
+
 import sqlite3
 import os
 import hashlib
@@ -6,6 +11,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 from datetime import datetime, date
+import io # Necessário para o download de PDF e CSV no Streamlit
 
 # ====================================================================
 # CONFIGURAÇÃO DE DIRETÓRIOS E CONSTANTES
@@ -21,19 +27,16 @@ if not os.path.exists(DATABASE_DIR):
 if not os.path.exists(ASSETS_DIR):
     os.makedirs(ASSETS_DIR)
 
-# Listas de categorias atualizadas (usadas nos seus códigos de exemplo)
+# Listas de categorias
 MARCAS = [
     "Eudora", "O Boticário", "Jequiti", "Avon", "Mary Kay", "Natura",
     "Oui-Original-Unique-Individuel", "Pierre Alexander", "Tupperware", "Outra"
 ]
-
 ESTILOS = [
     "Perfumaria", "Skincare", "Cabelo", "Corpo e Banho", "Make", "Masculinos", "Femininos Nina Secrets",
     "Marcas", "Infantil", "Casa", "Solar", "Maquiage", "Teen", "Kits e Presentes",
-    "Cuidados com o Corpo", "Lançamentos",
-    "Acessórios de Casa", "Outro"
+    "Cuidados com o Corpo", "Lançamentos", "Acessórios de Casa", "Outro"
 ]
-
 TIPOS = [
     "Perfumaria masculina", "Perfumaria feminina", "Body splash", "Body spray", "Eau de parfum",
     "Desodorantes", "Perfumaria infantil", "Perfumaria vegana", "Familia olfativa",
@@ -64,7 +67,6 @@ TIPOS = [
 def get_db_connection():
     """Retorna um objeto de conexão com o banco de dados SQLite."""
     conn = sqlite3.connect(DATABASE)
-    # Define o row_factory para retornar linhas como dicionários (acessíveis por nome de coluna)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -104,12 +106,11 @@ def create_tables():
         );
     """)
     
-    # 3. Cria um usuário admin padrão se ele não existir
+    # 3. Cria um usuário admin padrão se ele não existir (Senha: "123")
     try:
         cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                       ("admin", hash_password("123"), "admin"))
+                        ("admin", hash_password("123"), "admin"))
     except sqlite3.IntegrityError:
-        # admin já existe
         pass 
 
     conn.commit()
@@ -134,12 +135,24 @@ def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto=None, data_va
     conn.commit()
     conn.close()
 
-def get_all_produtos():
-    """Retorna todos os produtos, ordenados por nome."""
+def get_all_produtos(include_sold=True):
+    """Retorna todos os produtos. Se include_sold=False, retorna apenas itens com quantidade > 0."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Ordem por nome para facilitar visualização, pode mudar para ID/mais recente se preferir
-    cursor.execute("SELECT * FROM produtos ORDER BY nome ASC") 
+    if include_sold:
+        cursor.execute("SELECT * FROM produtos ORDER BY nome ASC")
+    else:
+        cursor.execute("SELECT * FROM produtos WHERE quantidade > 0 ORDER BY nome ASC")
+        
+    produtos = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return produtos
+
+def get_produtos_vendidos():
+    """Retorna todos os produtos que foram marcados como vendidos (vendido=1)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM produtos WHERE vendido = 1 ORDER BY data_ultima_venda DESC")
     produtos = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return produtos
@@ -178,7 +191,7 @@ def delete_produto(product_id):
         try:
             os.remove(os.path.join(ASSETS_DIR, produto['foto']))
         except FileNotFoundError:
-            pass # Ignora se a foto já não existir
+            pass 
 
     # 2. Deleta do banco de dados
     cursor.execute("DELETE FROM produtos WHERE id = ?", (product_id,))
@@ -190,7 +203,12 @@ def mark_produto_as_sold(product_id, quantity_sold=1):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Usa ISO format para facilitar a conversão de volta
+    # 1. Verifica se há estoque
+    produto = get_produto_by_id(product_id)
+    if not produto or produto.get('quantidade', 0) < quantity_sold:
+        raise ValueError("Estoque insuficiente para esta venda.")
+    
+    # 2. Atualiza
     cursor.execute(
         "UPDATE produtos SET quantidade = quantidade - ?, vendido = 1, data_ultima_venda = ? WHERE id = ?",
         (quantity_sold, datetime.now().isoformat(), product_id)
@@ -215,7 +233,6 @@ def add_user(username, password, role="staff"):
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        # Usuário já existe (campo username é UNIQUE)
         return False
     finally:
         conn.close()
@@ -237,89 +254,93 @@ def get_all_users():
     users = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return users
+    
+def check_user_login(username, password):
+    """Verifica as credenciais do usuário e retorna seus dados (ou None)."""
+    user = get_user(username)
+    if user and user['password'] == hash_password(password):
+        return user
+    return None
 
 # ====================================================================
 # FUNÇÕES DE EXPORTAÇÃO/IMPORTAÇÃO (CSV/PDF)
 # ====================================================================
 
-def export_produtos_to_csv(filepath):
-    """Exporta todos os produtos para um arquivo CSV."""
+def export_produtos_to_csv_content():
+    """Exporta todos os produtos para uma string CSV (para download direto)."""
     produtos = get_all_produtos()
     if not produtos:
-        return
+        return ""
         
     fieldnames = list(produtos[0].keys())
-    with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(produtos)
+    # Cria um buffer de string na memória
+    csv_buffer = io.StringIO()
+    writer = csv.DictWriter(csv_buffer, fieldnames=fieldnames, extrasaction='ignore', delimiter=';') # Use ';' para melhor compatibilidade BRL
+    writer.writeheader()
+    writer.writerows(produtos)
+    
+    return csv_buffer.getvalue()
 
-def import_produtos_from_csv(filepath):
-    """Importa produtos de um arquivo CSV (apenas adiciona novos)."""
+def import_produtos_from_csv_buffer(file_buffer):
+    """Importa produtos de um buffer de arquivo CSV (substituindo o uso de filepath)."""
     conn = get_db_connection()
     cursor = conn.cursor()
     count = 0
     
-    with open(filepath, 'r', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            # Tenta converter campos para o tipo correto, usa None/0 se falhar
-            try:
-                # Garante que os campos cruciais não sejam nulos ou inválidos
-                nome = row.get('nome')
-                if not nome: continue 
-                
-                preco = float(row.get('preco', 0))
-                quantidade = int(row.get('quantidade', 0))
-                vendido = int(row.get('vendido', 0))
-            except ValueError:
-                # Pula a linha se os campos numéricos estiverem inválidos
-                continue 
+    # Decodifica o buffer do Streamlit (bytes) para string e usa StringIO para ler como arquivo
+    string_data = io.StringIO(file_buffer.getvalue().decode('utf-8'))
+    
+    reader = csv.DictReader(string_data, delimiter=';') # Usa ';' como delimitador
+    
+    for row in reader:
+        try:
+            # Garante que os campos cruciais não sejam nulos ou inválidos
+            nome = row.get('nome')
+            if not nome: continue 
+            
+            # Tenta converter campos para o tipo correto
+            preco = float(row.get('preco', '0').replace(',', '.'))
+            quantidade = int(row.get('quantidade', '0'))
+            vendido = int(row.get('vendido', '0'))
+            
+        except ValueError:
+            continue # Pula a linha se os campos numéricos estiverem inválidos
 
-            # Insere um NOVO produto (ID será AUTOINCREMENT)
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, vendido, data_ultima_venda)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        nome, preco, quantidade, row.get('marca'), row.get('estilo'), 
-                        row.get('tipo'), row.get('foto'), row.get('data_validade'), vendido, 
-                        row.get('data_ultima_venda')
-                    )
+        # Insere um NOVO produto (ID será AUTOINCREMENT)
+        try:
+            cursor.execute(
+                """
+                INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, vendido, data_ultima_venda)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    nome, preco, quantidade, row.get('marca'), row.get('estilo'), 
+                    row.get('tipo'), row.get('foto'), row.get('data_validade'), vendido, 
+                    row.get('data_ultima_venda')
                 )
-                count += 1
-            except Exception as e:
-                # Em caso de erro de DB, apenas registra e continua
-                print(f"Erro ao inserir linha: {e}")
-                
+            )
+            count += 1
+        except Exception as e:
+            print(f"Erro ao inserir linha: {e}")
+            
     conn.commit()
     conn.close()
     return count
 
-
-def generate_stock_pdf(filepath):
-    """Gera um relatório PDF com a lista de produtos."""
-    produtos = get_all_produtos()
+def generate_stock_pdf_bytes():
+    """Gera um relatório PDF com a lista de produtos e retorna os bytes (para download direto)."""
+    produtos = get_all_produtos(include_sold=False) # Apenas produtos em estoque
     
-    if not produtos:
-        # Cria um arquivo vazio se não houver produtos
-        c = canvas.Canvas(filepath, pagesize=A4)
-        c.setFont('Helvetica-Bold', 12)
-        c.drawString(cm, A4[1] - 50, 'Relatório de Estoque - Vazio')
-        c.drawString(cm, A4[1] - 70, 'Nenhum produto em estoque para gerar o relatório.')
-        c.save()
-        return
-
-    c = canvas.Canvas(filepath, pagesize=A4)
+    # Usa um buffer de memória (BytesIO) para evitar salvar no disco
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     
     y_position = height - 50
     
     # Título
     c.setFont('Helvetica-Bold', 16)
-    c.drawString(cm, y_position, 'Relatório de Estoque - Cores e Fragrâncias')
+    c.drawString(cm, y_position, 'Relatório de Estoque Ativo - Cores e Fragrâncias')
     y_position -= 20
     
     # Data de Geração
@@ -329,9 +350,9 @@ def generate_stock_pdf(filepath):
     
     # Cabeçalho da tabela
     c.setFont('Helvetica-Bold', 10)
-    col_x = [cm, cm*5, cm*10, cm*13, cm*15, cm*17.5] # Posições X das colunas
+    col_x = [cm, cm*6, cm*11, cm*13, cm*15, cm*17.5] 
     c.drawString(col_x[0], y_position, 'Nome')
-    c.drawString(col_x[1], y_position, 'Marca/Estilo')
+    c.drawString(col_x[1], y_position, 'Marca')
     c.drawString(col_x[2], y_position, 'Tipo')
     c.drawString(col_x[3], y_position, 'Qtd')
     c.drawString(col_x[4], y_position, 'Preço')
@@ -342,14 +363,16 @@ def generate_stock_pdf(filepath):
     
     # Conteúdo da tabela
     c.setFont('Helvetica', 9)
+    total_valor_estoque = 0.0
+    
     for p in produtos:
-        if y_position < 40: # Se estiver chegando no fim da página
-            c.showPage() # Nova página
+        if y_position < 40: 
+            c.showPage() 
             y_position = height - 50
             # Repete o cabeçalho
             c.setFont('Helvetica-Bold', 10)
             c.drawString(col_x[0], y_position, 'Nome')
-            c.drawString(col_x[1], y_position, 'Marca/Estilo')
+            c.drawString(col_x[1], y_position, 'Marca')
             c.drawString(col_x[2], y_position, 'Tipo')
             c.drawString(col_x[3], y_position, 'Qtd')
             c.drawString(col_x[4], y_position, 'Preço')
@@ -359,31 +382,44 @@ def generate_stock_pdf(filepath):
             y_position -= 15
             c.setFont('Helvetica', 9)
 
-        # Formatação de Data de Validade
+        # Formatação de Data, Preço e Cálculo
         validade = p.get('data_validade') or '-'
         if validade != '-':
             try:
-                # Converte ISO format (armazenado no DB) para DD/MM/AAAA
                 validade = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
             except ValueError:
-                pass # Mantém o valor como está se a conversão falhar
+                pass 
                 
-        # Garante que os campos não sejam None
         nome = p.get('nome') or '-'
         marca = p.get('marca') or '-'
-        estilo = p.get('estilo') or '-'
         tipo = p.get('tipo') or '-'
         quantidade = p.get('quantidade') or 0
         preco = p.get('preco') or 0.0
+        
+        # Formato BRL para exibição
+        preco_formatado = f"R$ {float(preco):_.2f}".replace('.', 'X').replace('_', '.').replace('X', ',')
+        total_valor_estoque += float(preco) * float(quantidade)
 
         # Desenha as linhas
-        c.drawString(col_x[0], y_position, nome[:35]) # Limita o tamanho
-        c.drawString(col_x[1], y_position, f"{marca}/{estilo}")
-        c.drawString(col_x[2], y_position, tipo[:25])
+        c.drawString(col_x[0], y_position, nome[:30]) 
+        c.drawString(col_x[1], y_position, marca[:20])
+        c.drawString(col_x[2], y_position, tipo[:20])
         c.drawString(col_x[3], y_position, str(quantidade))
-        c.drawString(col_x[4], y_position, f"R$ {float(preco):.2f}")
+        c.drawString(col_x[4], y_position, preco_formatado)
         c.drawString(col_x[5], y_position, validade)
         
         y_position -= 15
         
+    # Total de Estoque
+    y_position -= 10
+    total_valor_estoque_exibicao = f"R$ {total_valor_estoque:_.2f}".replace('.', 'X').replace('_', '.').replace('X', ',')
+    c.line(cm, y_position, width - cm, y_position)
+    y_position -= 15
+    c.setFont('Helvetica-Bold', 12)
+    c.drawString(col_x[0], y_position, f"VALOR TOTAL DO ESTOQUE ATIVO: {total_valor_estoque_exibicao}")
+    
     c.save()
+    
+    # Retorna os bytes do PDF
+    buffer.seek(0)
+    return buffer.getvalue()
