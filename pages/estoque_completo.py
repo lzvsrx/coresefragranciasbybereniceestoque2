@@ -1,11 +1,27 @@
 import streamlit as st
-from utils.database import get_all_produtos
+from utils.database import get_all_produtos, ASSETS_DIR # Importado ASSETS_DIR para fotos
+from datetime import datetime
 import os
 
 # --- Funções Auxiliares ---
-def load_css(file_name):
+
+def format_to_brl(value):
+    """Formata um float para string no formato R$ 1.234.567,89."""
+    try:
+        # 1. Converte para float (se já não for)
+        num = float(value)
+        # 2. Formata com underscore (_) como separador de milhar e ponto (.) como decimal
+        formatted = f"{num:_.2f}" 
+        # 3. Substitui o ponto (decimal) por vírgula (,)
+        formatted = formatted.replace('.', ',') 
+        # 4. Substitui o underscore (milhar) por ponto (.) e adiciona o prefixo R$
+        return "R$ " + formatted.replace('_', '.') 
+    except (ValueError, TypeError):
+        return "R$ N/A"
+
+def load_css(file_name="style.css"):
     if not os.path.exists(file_name):
-        st.warning(f"O arquivo CSS '{file_name}' não foi encontrado.")
+        # Apenas um aviso, pois o arquivo pode estar em outro lugar
         return
     try:
         with open(file_name, encoding='utf-8') as f: 
@@ -13,8 +29,9 @@ def load_css(file_name):
     except Exception as e:
         st.error(f"Erro ao carregar CSS: {e}")
 
-load_css("style.css")
+# --- Configuração e Carga Inicial ---
 
+load_css("style.css") # Aplica o CSS
 st.set_page_config(page_title="Estoque - Cores e Fragrâncias")
 
 st.title("📦 Estoque Completo")
@@ -50,29 +67,41 @@ else:
 
     st.markdown("---")
     st.subheader(f"{len(produtos_filtrados)} produtos encontrados")
+    
+    # Inicializa o cálculo total
+    total_estoque = 0.0
 
     # Exibição dos produtos filtrados
     for p in produtos_filtrados:
-        st.markdown(f"### **{p.get('nome')}**")
         
-        # TRATAMENTO DE ERRO: Preço e Quantidade
+        # TRATAMENTO DE ERRO: Preço e Quantidade (para cálculo e exibição)
         try:
-            preco_formatado = f"R$ {float(p.get('preco')):.2f}"
+            preco_float = float(p.get('preco'))
             quantidade_int = int(p.get('quantidade', 0))
+            
+            # Cálculo e adição ao total
+            valor_produto = preco_float * quantidade_int
+            total_estoque += valor_produto
+            
+            # Formatação para exibição
+            preco_formatado = format_to_brl(preco_float)
+            valor_produto_formatado = format_to_brl(valor_produto)
+            
         except (ValueError, TypeError):
             preco_formatado = "R$ N/A"
             quantidade_int = "N/A"
+            valor_produto_formatado = "R$ N/A"
 
-        st.write(f"**Preço:** {preco_formatado}")
-        st.write(f"**Quantidade:** {quantidade_int}")
-        st.write(f"**Marca:** {p.get('marca')}")
-        st.write(f"**Estilo:** {p.get('estilo')}")
-        st.write(f"**Tipo:** {p.get('tipo')}")
+        st.markdown(f"### **{p.get('nome')}**")
+        
+        st.write(f"**Marca:** {p.get('marca')} • **Estilo:** {p.get('estilo')} • **Tipo:** {p.get('tipo')}")
+        st.write(f"**Preço Unitário:** {preco_formatado} • **Quantidade em Estoque:** {quantidade_int}")
+        st.write(f"**Valor Total deste Item:** **{valor_produto_formatado}**")
         st.write(f"**Validade:** {p.get('data_validade') or 'N/A'}")
         
         # TRATAMENTO DE ERRO: Carregamento da foto
         if p.get("foto"):
-            photo_path = os.path.join("assets", p.get('foto'))
+            photo_path = os.path.join(ASSETS_DIR, p.get('foto')) # Usando ASSETS_DIR
             if os.path.exists(photo_path):
                 try:
                     st.image(photo_path, width=180)
@@ -83,11 +112,5 @@ else:
                 
         st.markdown("---")
 
-    # Cálculo do valor total em estoque (filtrado) - Robusto
-    total_estoque = sum(
-        (float(p.get("preco", 0)) if p.get("preco") else 0) * (int(p.get("quantidade", 0)) if p.get("quantidade") else 0)
-        for p in produtos_filtrados
-    )
-    
-
-    st.success(f"💰 Valor Total em Estoque (filtrado): R$ {total_estoque:.,2f}")
+    # Exibição do Valor Total em Estoque (filtrado) - AGORA COM FORMATO BRL CORRETO
+    st.success(f"💰 Valor Total em Estoque (filtrado): **{format_to_brl(total_estoque)}**")
