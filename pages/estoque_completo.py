@@ -89,4 +89,5 @@ else:
         for p in produtos_filtrados
     )
     
-    st.success(f"💰 Valor Total em Estoque (filtrado): R$ {total_estoque:,.2f}")
+
+    st.success(f"💰 Valor Total em Estoque (filtrado): R$ {total_estoque:.,2f}")
