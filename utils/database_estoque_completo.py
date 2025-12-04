@@ -591,6 +591,28 @@ def run_example():
     generate_stock_pdf(pdf_path)
 
     print("\n--- ✅ TESTE CONCLUÍDO. ARQUIVOS DE RELATÓRIO GERADOS. ---")
+def get_binary_file_downloader_html(bin_file, link_text, file_ext='pdf'):
+    """Gera o HTML para um link de download de arquivo binário (usado para PDF)."""
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    bin_str = base64.b64encode(data).decode()
+    href = f'<a href="data:file/{file_ext};base64,{bin_str}" download="{os.path.basename(bin_file)}">{link_text}</a>'
+    return href
 
+def initialize_admin_user():
+    """Tenta criar o usuário admin (redundante, mas mantém a estrutura do Streamlit)."""
+    # A função create_tables() no database.py já tenta criar o admin.
+    # Esta função é mantida para não quebrar a importação do Streamlit.
+    conn = create_connection()
+    if not conn: return
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                       ("admin", hash_password("123"), "admin"))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass # admin já existe
+    finally:
+        conn.close()
 if __name__ == '__main__':
     run_example()
