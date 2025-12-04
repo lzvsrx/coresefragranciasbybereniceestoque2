@@ -1,15 +1,19 @@
-Você forneceu essencialmente dois conjuntos de código que tentam resolver o mesmo problema (gerenciamento de estoque SQLite), mas usam estruturas de banco de dados e bibliotecas diferentes (um usa reportlab, o outro usa fpdf, pandas e um esquema de DB com lotes e transações).
+Você forneceu dois conjuntos de códigos de banco de dados (um baseado em ReportLab/modelo simples e outro em FPDF/Pandas/modelo de lotes e transações) para gerenciamento de estoque em Python.
 
-Para criar um código completo e funcional, vou unificar e refinar o segundo código que você forneceu (que é mais moderno e usa fpdf, pandas, lotes e transações, resolvendo o problema de ter dois códigos separados).
+Para criar um código completo e sem erros de importação, eu unifiquei as funções em um único arquivo chamado database_estoque_completo.py.
 
-Atenção: Para que este código funcione, você deve instalar as bibliotecas necessárias.
+A versão final utiliza a arquitetura mais robusta que você sugeriu no segundo bloco (com tabelas de produtos, usuários e transações), gerenciamento de lotes usando JSON e as bibliotecas modernas de exportação (Pandas e FPDF).
 
-⚠️ Instalação Necessária
+🛠️ Requisitos e Preparação
+Para executar este código, você precisa das seguintes bibliotecas:
+
 Bash
 
 pip install sqlite3 pandas fpdf
+(Se você quiser usar a função export_produtos_to_excel, você também precisará de openpyxl: pip install openpyxl)
+
 📄 Arquivo Único: database_estoque_completo.py
-Este script contém todas as funções de utilidade, conexão, CRUD, gestão de lotes, transações e exportação (CSV, Excel, PDF), em um único arquivo, garantindo que não haja erros de ImportError ou sqlite3 de um módulo para outro.
+Este é o código Python completo, pronto para ser usado como o módulo de banco de dados (database.py ou similar) na sua aplicação Streamlit.
 
 Python
 
@@ -17,9 +21,10 @@ import sqlite3
 import os
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
-from fpdf import FPDF # Usaremos fpdf para a geração de PDF (melhor suporte a utf-8)
+from fpdf import FPDF # Biblioteca para geração de PDF (usada para relatórios)
+import csv # Usado para manipulação de CSV
 
 # ====================================================================
 # CONFIGURAÇÃO DE DIRETÓRIOS E CONSTANTES
@@ -36,7 +41,7 @@ if not os.path.exists(DATABASE_DIR):
 if not os.path.exists(ASSETS_DIR): 
     os.makedirs(ASSETS_DIR)
 
-# Constantes de Categoria
+# Constantes de Categoria (Unificadas)
 MARCAS = [
     "Eudora", "O Boticário", "Jequiti", "Avon", "Mary Kay", "Natura",
     "Oui-Original-Unique-Individuel", "Pierre Alexander", "Tupperware", "Outra"
@@ -54,7 +59,7 @@ TIPOS = [
     "Eau de parfum", "Desodorantes", "Perfumaria infantil", "Perfumaria vegana", 
     "Rosto", "Tratamento para o rosto", "Acne", "Limpeza", "Esfoliante", 
     "Tônico facial", "Tratamento para cabelos", "Shampoo", "Condicionador", 
-    "Hidratante", "Sabonetes", "Protetor solar", "Outro" # Lista reduzida para clareza
+    "Hidratante", "Sabonetes", "Protetor solar", "Outro"
 ]
 
 
@@ -67,7 +72,6 @@ def create_connection():
     conn = None
     try:
         conn = sqlite3.connect(DATABASE)
-        # Define o row_factory para retornar linhas como dicionários (acessíveis por nome de coluna)
         conn.row_factory = sqlite3.Row
     except sqlite3.Error as e:
         print(f"Erro ao conectar ao SQLite: {e}")
@@ -95,7 +99,7 @@ def create_tables():
             estilo TEXT,
             tipo TEXT,
             foto TEXT,
-            lotes TEXT -- Armazena a lista de lotes como string JSON
+            lotes TEXT -- Armazena a lista de lotes como string JSON: [{'validade': 'YYYY-MM-DD', 'quantidade': X}, ...]
         )
     """)
 
@@ -136,7 +140,7 @@ create_tables()
 
 
 # ====================================================================
-# FUNÇÕES CRUD E DE TRANSAÇÕES
+# FUNÇÕES DE CONSULTA
 # ====================================================================
 
 def get_product_from_row(row):
@@ -145,6 +149,8 @@ def get_product_from_row(row):
     # Tenta converter a string JSON de lotes de volta para lista/dicionário Python
     try:
         product['lotes'] = json.loads(product.get('lotes', '[]'))
+        # Ordena lotes pela validade (mais próxima primeiro)
+        product['lotes'].sort(key=lambda x: x['validade'])
     except (json.JSONDecodeError, TypeError):
         product['lotes'] = []
     return product
@@ -165,7 +171,7 @@ def get_transacoes_by_produto_id(produto_id):
     return transacoes
 
 def get_all_produtos():
-    """Busca todos os produtos e anexa o histórico de transações (parcial)."""
+    """Busca todos os produtos e anexa o histórico de transações (parcial para visualização)."""
     conn = create_connection()
     produtos = []
     if conn:
@@ -198,8 +204,13 @@ def get_produto_by_id(product_id):
     conn.close()
     
     if produto:
+        # Busca detalhes completos do produto, incluindo lotes
         return get_product_from_row(produto)
     return None
+
+# ====================================================================
+# FUNÇÕES CRUD (Produtos)
+# ====================================================================
 
 def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto, lotes_data):
     """Adiciona um novo produto e registra a transação de adição inicial."""
@@ -269,6 +280,10 @@ def delete_produto(product_id):
     conn.commit()
     conn.close()
 
+# ====================================================================
+# FUNÇÕES DE MOVIMENTAÇÃO (Venda)
+# ====================================================================
+
 def mark_produto_as_sold(produto_id, quantidade_vendida=1):
     """Atualiza a quantidade e registra a transação de venda."""
     conn = create_connection()
@@ -276,7 +291,7 @@ def mark_produto_as_sold(produto_id, quantidade_vendida=1):
         try:
             cursor = conn.cursor()
             
-            # 1. Verifica e atualiza a quantidade no estoque
+            # 1. Verifica a quantidade e realiza a venda
             cursor.execute("SELECT quantidade FROM produtos WHERE id=?", (produto_id,))
             produto_row = cursor.fetchone()
             if not produto_row:
@@ -303,10 +318,14 @@ def mark_produto_as_sold(produto_id, quantidade_vendida=1):
         except sqlite3.Error as e:
             print(f"Erro ao marcar produto como vendido: {e}")
         except ValueError as e:
+            # Propaga o erro de estoque para a interface
             raise e
         finally:
             conn.close()
     return False
+
+# Nota: A lógica de venda por lote precisa ser implementada na camada da sua aplicação (Streamlit/UI)
+# e usar a função `update_produto` para recalcular a quantidade total e a lista de lotes.
 
 # ====================================================================
 # FUNÇÕES DE LOGIN E USUÁRIOS
@@ -355,11 +374,9 @@ def export_produtos_to_dataframe():
     """Busca todos os produtos e retorna um DataFrame do Pandas."""
     produtos = get_all_produtos()
     
-    # Prepara os dados para o DataFrame
     data_for_df = []
     for p in produtos:
         lotes_info = []
-        # Garante que 'lotes' está formatado antes de exportar
         if isinstance(p['lotes'], list):
             for lote in p['lotes']:
                 try:
@@ -368,7 +385,6 @@ def export_produtos_to_dataframe():
                 except:
                     lotes_info.append(f"Qtd: {lote['quantidade']} (V: Inválida)")
         
-        # Formata o histórico
         adicoes = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_adicao', [])]
         vendas = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_venda', [])]
         
@@ -430,13 +446,15 @@ def generate_stock_pdf(filepath):
     pdf.set_font('Arial', '', 10)
     
     # Larguras das colunas
-    col_widths = [50, 15, 20, 30, 70] # Nome, Qtd, Preço, Validades, Histórico
+    col_widths = [50, 15, 20, 30, 70] 
     
     for produto in produtos:
+        # Título do Produto
         pdf.set_fill_color(200, 220, 255)
         pdf.set_font('Arial', 'B', 11)
         pdf.cell(0, 7, f"Produto: {produto['nome']} ({produto['marca']})", 1, 1, 'L', 1)
         
+        # Cabeçalho da Seção de Detalhes
         pdf.set_font('Arial', 'B', 8)
         pdf.cell(col_widths[0], 5, 'Detalhe', 1, 0, 'C')
         pdf.cell(col_widths[1], 5, 'Qtd', 1, 0, 'C')
@@ -464,7 +482,7 @@ def generate_stock_pdf(filepath):
                 except:
                     lotes_info.append("Erro")
 
-        # 1ª Linha de Dados
+        # Linha de Dados
         pdf.cell(col_widths[0], 5, f"Estilo: {produto['estilo']} | Tipo: {produto['tipo']}", 1, 0, 'L')
         pdf.cell(col_widths[1], 5, str(produto['quantidade']), 1, 0, 'C')
         pdf.cell(col_widths[2], 5, preco_formatado, 1, 0, 'R')
@@ -476,6 +494,59 @@ def generate_stock_pdf(filepath):
     pdf.output(filepath, 'F')
     print(f"PDF gerado e salvo em: {filepath}")
 
+def import_produtos_from_csv(filepath):
+    """Importa produtos de um CSV. Adiciona novos e recalcula a quantidade total com base nos lotes fornecidos."""
+    conn = create_connection()
+    cursor = conn.cursor()
+    count = 0
+    
+    with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
+        # Usa o separador ';' que é comum no Brasil
+        reader = csv.DictReader(csvfile, delimiter=';') 
+        for row in reader:
+            try:
+                nome = row.get('Nome') or row.get('nome')
+                if not nome: continue
+                
+                preco = float(row.get('Preço (R$)') or row.get('preco', 0.0))
+                marca = row.get('Marca') or row.get('marca')
+                estilo = row.get('Estilo') or row.get('estilo')
+                tipo = row.get('Tipo') or row.get('tipo')
+                foto = row.get('Foto Filename') or row.get('foto')
+                
+                # Assume que a coluna 'Lotes' contém a string JSON
+                lotes_str = row.get('Lotes', '[]')
+                lotes_data = json.loads(lotes_str)
+                
+                # Recalcula a quantidade total com base nos lotes
+                quantidade = sum(lote.get('quantidade', 0) for lote in lotes_data)
+                
+                # Adiciona o novo produto
+                cursor.execute(
+                    """
+                    INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, lotes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (nome, preco, quantidade, marca, estilo, tipo, foto, lotes_str)
+                )
+                
+                produto_id = cursor.lastrowid
+                
+                # Registra a transação de adição (se houver estoque)
+                if quantidade > 0:
+                    cursor.execute(
+                        "INSERT INTO transacoes (produto_id, data, quantidade, tipo) VALUES (?, ?, ?, ?)",
+                        (produto_id, datetime.now().isoformat(), quantidade, 'ADICAO')
+                    )
+                
+                count += 1
+            except Exception as e:
+                print(f"Erro ao inserir linha do CSV (Nome: {nome}): {e}")
+                
+    conn.commit()
+    conn.close()
+    return count
+
 # ====================================================================
 # EXEMPLO DE USO (Para Teste)
 # ====================================================================
@@ -484,28 +555,26 @@ def run_example():
     """Executa um exemplo de CRUD e exportação."""
     print("--- 🛠️ INICIANDO TESTE DO SISTEMA DE ESTOQUE COMPLETO 🛠️ ---")
     
-    # 1. Adicionar Produtos
+    # Adicionar Produtos
     lotes_perfume = [
         {'validade': '2025-12-31', 'quantidade': 10},
         {'validade': '2026-06-30', 'quantidade': 5}
     ]
     
     add_produto("Perfume Flor de Algodão", 129.90, 15, "Natura", "Perfumaria", "Perfumaria feminina", "foto_flor.png", lotes_perfume)
-    print("Produto 1 adicionado.")
-
+    
     lotes_creme = [
         {'validade': '2024-10-15', 'quantidade': 8} # Lote com validade próxima!
     ]
     add_produto("Creme Mãos de Seda", 35.50, 8, "Mary Kay", "Skincare", "Hidratante", "foto_creme.png", lotes_creme)
-    print("Produto 2 adicionado.")
     
-    # 2. Listar Produtos
+    # Listar Produtos
     produtos = get_all_produtos()
     print(f"\n✅ Produtos no Estoque (Total: {len(produtos)}):")
     for p in produtos:
-        print(f"  - ID: {p['id']}, Nome: {p['nome']}, Qtd: {p['quantidade']}, Preço: R${p['preco']:.2f}")
+        print(f"  - ID: {p['id']}, Nome: {p['nome']}, Qtd: {p['quantidade']}, Marca: {p['marca']}")
 
-    # 3. Registrar Venda
+    # Registrar Venda
     if produtos:
         primeiro_id = produtos[0]['id']
         try:
@@ -514,13 +583,11 @@ def run_example():
         except Exception as e:
             print(f"\n❌ Erro na venda: {e}")
 
-    # 4. Exportar Dados
+    # Exportar Dados
     csv_path = os.path.join(DATABASE_DIR, "relatorio_estoque.csv")
-    excel_path = os.path.join(DATABASE_DIR, "relatorio_estoque.xlsx")
     pdf_path = os.path.join(DATABASE_DIR, "relatorio_estoque.pdf")
     
     export_produtos_to_csv(csv_path)
-    # export_produtos_to_excel(excel_path) # Descomente se tiver openpyxl instalado
     generate_stock_pdf(pdf_path)
 
     print("\n--- ✅ TESTE CONCLUÍDO. ARQUIVOS DE RELATÓRIO GERADOS. ---")
