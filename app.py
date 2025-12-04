@@ -5,12 +5,14 @@ import os
 import shutil
 import base64 # Necessário para a função de download
 import json # Necessário para debug ou manipulação de lotes no frontend
+import sqlite3 # Importado para tratamento de exceções no database.py
 
 # ====================================================================
 # CONFIGURAÇÃO DE IMPORTS E FUNÇÕES DE UTILS
 # ====================================================================
 
 # Ajuste para importar do arquivo database.py no mesmo diretório
+# Certifique-se de que o seu arquivo database_estoque_completo.py esteja renomeado para 'database.py'
 try:
     from database import (
         get_user, hash_password, add_user, get_all_users, 
@@ -18,10 +20,16 @@ try:
         update_produto, delete_produto, mark_produto_as_sold, 
         MARCAS, ESTILOS, TIPOS, 
         generate_stock_pdf, ASSETS_DIR, 
-        create_tables, get_binary_file_downloader_html, initialize_admin_user
+        create_tables, 
+        # Funções de utilidade adicionadas ao final de database.py (ver item 2 acima)
+        get_binary_file_downloader_html, initialize_admin_user
     )
 except ImportError as e:
-    st.error(f"🚨 Erro: Não foi possível importar as funções do 'database.py'. Certifique-se de que o arquivo existe no mesmo diretório. Detalhes: {e}")
+    # Caso o arquivo não seja encontrado ou haja erro de sintaxe/import no database.py
+    st.error(f"🚨 Erro: Não foi possível importar as funções do 'database.py'. Detalhes: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"🚨 Erro desconhecido na inicialização do database: {e}")
     st.stop()
     
 # Inicializa o banco de dados e as tabelas, incluindo o usuário admin
@@ -37,7 +45,7 @@ def load_css(file_name):
     # Note: O arquivo style.css precisaria ser criado separadamente,
     # caso contrário, a warning aparecerá.
     if not os.path.exists(file_name):
-        st.warning(f"O arquivo CSS '{file_name}' não foi encontrado.")
+        # st.warning(f"O arquivo CSS '{file_name}' não foi encontrado.") # Comentado para não poluir
         return
     with open(file_name, encoding='utf-8') as f: 
         st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
@@ -113,15 +121,15 @@ def show_product_form(product=None):
     
     # 1. Inicializa o estado de lotes para o formulário
     if not is_editing:
-        if st.session_state['edit_id'] is not None:
-             # Se está em modo de adição, mas edit_id está setado de uma edição anterior, zera.
-             st.session_state['edit_id'] = None
+        if st.session_state.get('edit_id') is not None:
+              # Se está em modo de adição, mas edit_id está setado de uma edição anterior, zera.
+              st.session_state['edit_id'] = None
         # Novo produto, garante que lotes_data está vazio
         if 'lotes_data' in st.session_state:
-             st.session_state['lotes_data'] = []
+              st.session_state['lotes_data'] = []
     
+    # Lógica de cópia de lotes para edição (executa apenas uma vez ao entrar no modo de edição)
     if is_editing and product.get('lotes') and st.session_state.get('edit_id') != product['id']:
-        # Copia os lotes para edição APENAS na primeira vez que abre o formulário de edição
         st.session_state['lotes_data'] = product['lotes']
         st.session_state['edit_id'] = product['id'] # Marca o ID para saber qual está editando
     
@@ -141,20 +149,20 @@ def show_product_form(product=None):
             # Ajuste de index para Selectbox
             try:
                 marca_index = MARCAS.index(product['marca']) if is_editing and product['marca'] in MARCAS else 0
-            except ValueError:
+            except (ValueError, TypeError):
                 marca_index = 0
             marca = st.selectbox("Marca", MARCAS, index=marca_index)
         
         with col2:
             try:
                 estilo_index = ESTILOS.index(product['estilo']) if is_editing and product['estilo'] in ESTILOS else 0
-            except ValueError:
+            except (ValueError, TypeError):
                 estilo_index = 0
             estilo = st.selectbox("Estilo", ESTILOS, index=estilo_index)
             
             try:
                 tipo_index = TIPOS.index(product['tipo']) if is_editing and product['tipo'] in TIPOS else 0
-            except ValueError:
+            except (ValueError, TypeError):
                 tipo_index = 0
             tipo = st.selectbox("Tipo", TIPOS, index=tipo_index)
             
@@ -162,10 +170,10 @@ def show_product_form(product=None):
             
             current_photo = product.get('foto') if is_editing else None
             if current_photo:
-                 photo_path_display = os.path.join(ASSETS_DIR, current_photo)
-                 if os.path.exists(photo_path_display):
+                photo_path_display = os.path.join(ASSETS_DIR, current_photo)
+                if os.path.exists(photo_path_display):
                     st.image(photo_path_display, caption="Foto Atual", width=100)
-                 else:
+                else:
                     st.info("Foto salva não encontrada no diretório 'assets'.")
         
         st.markdown("---")
@@ -180,20 +188,24 @@ def show_product_form(product=None):
         if st.session_state.get('lotes_data'):
             
             # Garante que os lotes sejam editáveis, mas que a exclusão funcione no rerun
+            # Itera sobre uma cópia, pois a remoção muda o índice
             for i, lote in enumerate(st.session_state['lotes_data']):
                 col_i1, col_i2, col_i3 = st.columns([0.4, 0.4, 0.2])
                 
                 # Formata a validade para o widget
                 try:
+                    # Lotes do DB já estão no formato ISO string, converte para date
                     lote_validade_dt = datetime.fromisoformat(lote['validade']).date()
                 except (ValueError, TypeError):
                     lote_validade_dt = date.today()
 
                 
-                nova_validade = col_i1.date_input(f"Validade Lote {i+1}", value=lote_validade_dt, key=f"validade_{i}_{st.session_state['edit_id']}")
-                nova_quantidade = col_i2.number_input(f"Quantidade Lote {i+1}", min_value=0, value=lote['quantidade'], key=f"quantidade_{i}_{st.session_state['edit_id']}")
+                # O key precisa incluir o ID para diferenciar widgets em loops
+                nova_validade = col_i1.date_input(f"Validade Lote {i+1}", value=lote_validade_dt, key=f"validade_{i}_{st.session_state.get('edit_id', 'new')}")
+                nova_quantidade = col_i2.number_input(f"Quantidade Lote {i+1}", min_value=0, value=lote['quantidade'], key=f"quantidade_{i}_{st.session_state.get('edit_id', 'new')}")
                 
-                if col_i3.button("Remover Lote", key=f"remover_{i}_{st.session_state['edit_id']}"):
+                # Botão de remover que força um rerun
+                if col_i3.button("Remover Lote", key=f"remover_{i}_{st.session_state.get('edit_id', 'new')}"):
                     # Remove o lote e recarrega a página
                     st.session_state['lotes_data'].pop(i)
                     st.rerun()
@@ -211,6 +223,7 @@ def show_product_form(product=None):
         # 3. Adicionar novo lote
         st.markdown("##### Adicionar Novo Lote")
         col_new1, col_new2 = st.columns(2)
+        # Usa um valor padrão diferente para não colidir com o `lote_validade_dt`
         new_validade = col_new1.date_input("Validade do Novo Lote", value=date.today(), key="new_validade_lote")
         new_quantidade = col_new2.number_input("Quantidade do Novo Lote", min_value=0, value=0, key="new_quantidade_lote")
 
@@ -295,18 +308,24 @@ def show_list_products():
         st.subheader("Relatórios")
         
         if st.button('Gerar e Baixar Relatório PDF (Lotes) 📥'):
+            # Define o caminho para salvar o PDF
             PDF_FILE_PATH = os.path.join(os.getcwd(), "Relatorio_Estoque.pdf")
             try:
+                # Usa a função do DB que gera o PDF
                 generate_stock_pdf(PDF_FILE_PATH)
+                # Gera o link de download
                 download_link_html = get_binary_file_downloader_html(PDF_FILE_PATH, 'Baixar Relatório PDF')
                 st.markdown(download_link_html, unsafe_allow_html=True)
                 st.success("Relatório de Lotes gerado com sucesso!")
             except Exception as e:
-                st.error(f"Erro ao gerar o PDF: Certifique-se de que a biblioteca ReportLab está instalada (`pip install reportlab`). Detalhes: {e}")
+                # O novo database.py usa FPDF, o erro anterior não é mais válido,
+                # mas é bom ter um tratamento genérico.
+                st.error(f"Erro ao gerar o PDF: Verifique se a biblioteca FPDF está instalada (`pip install fpdf`). Detalhes: {e}")
         
         st.markdown("---")
 
 
+    # O get_all_produtos() do novo database.py já anexa o histórico de transações
     produtos = get_all_produtos()
     
     if not produtos:
@@ -315,10 +334,10 @@ def show_list_products():
 
     # Aplicar filtros
     filtered_produtos = [p for p in produtos if 
-                         search_term.lower() in p['nome'].lower() and
-                         (filter_brand == "Todos" or p['marca'] == filter_brand) and
-                         (filter_style == "Todos" or p['estilo'] == filter_style) and
-                         (filter_type == "Todos" or p['tipo'] == filter_type)
+                          search_term.lower() in p['nome'].lower() and
+                          (filter_brand == "Todos" or p['marca'] == filter_brand) and
+                          (filter_style == "Todos" or p['estilo'] == filter_style) and
+                          (filter_type == "Todos" or p['tipo'] == filter_type)
                         ]
     
     if not filtered_produtos:
@@ -329,6 +348,20 @@ def show_list_products():
     # LISTAGEM DE PRODUTOS
     # ----------------------------------------------------
     for p in filtered_produtos:
+        
+        # O novo DB não tem 'data_adicao' nem 'vendido' direto na tabela 'produtos',
+        # mas adiciona 'historico_adicao' e 'historico_venda' como listas
+        
+        data_adicao_str = "N/A"
+        if p.get('historico_adicao'):
+            # Pega a data da primeira transação de adição para display (ou N/A)
+            try:
+                data_adicao_str = datetime.fromisoformat(p['historico_adicao'][0]).strftime('%d/%m/%Y')
+            except Exception:
+                pass
+        
+        vendidos_count = len(p.get('historico_venda', []))
+        
         # Título do expander: Nome | Qtd Total | Preço
         expander_title = f"**{p['nome']}** | Qtd Total: **{p['quantidade']}** | R$ {p['preco']:.2f}"
         
@@ -342,50 +375,53 @@ def show_list_products():
             # Coluna da Foto
             photo_path = os.path.join(ASSETS_DIR, p.get('foto')) if p.get('foto') else None
             if photo_path and os.path.exists(photo_path):
-                 col_list_1.image(photo_path, caption=p['marca'], width=80)
+                col_list_1.image(photo_path, caption=p['marca'], width=80)
             else:
-                 col_list_1.info("Sem Foto")
+                col_list_1.info("Sem Foto")
 
             # Coluna de Detalhes
             col_list_2.markdown(f"""
             - **Marca:** {p['marca']}
             - **Estilo:** {p['estilo']}
             - **Tipo:** {p['tipo']}
-            - **Adicionado:** {datetime.fromisoformat(p['data_adicao']).strftime('%d/%m/%Y')}
-            - **Vendidos:** {p['vendido']}
+            - **Primeira Adição:** {data_adicao_str}
+            - **Total Vendidos:** {vendidos_count}
             """)
 
             # Coluna de Lotes e Venda
             with col_list_3:
-                st.markdown("##### 🛒 Venda por Lote")
+                st.markdown("##### 🛒 Venda por Lote (FIFO/LIFO na Venda)")
                 
-                # Cria a lista de opções de venda
                 lote_options = {}
-                # Garantindo que 'lotes' é uma lista
-                lotes_data = p.get('lotes', [])
-                if isinstance(lotes_data, str):
-                    try:
-                        lotes_data = json.loads(lotes_data)
-                    except json.JSONDecodeError:
-                        lotes_data = []
-
-                for lote in lotes_data:
-                    if lote['quantidade'] > 0:
-                        validade_str = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
-                        # Chave (para a função de venda): 'YYYY-MM-DD', Valor no Select: 'Qtd: X (Vence em DD/MM/AAAA)'
-                        lote_options[lote['validade']] = f"Qtd: {lote['quantidade']} (Vence em {validade_str})"
+                lotes_data = p.get('lotes', []) # Lotes já vem como lista de dicts no novo DB
+                
+                # Popula as opções de lote disponíveis
+                for i, lote in enumerate(lotes_data):
+                    if lote.get('quantidade', 0) > 0:
+                        try:
+                            validade_str = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
+                        except:
+                            validade_str = "Data Inválida"
+                            
+                        # A chave é o índice do lote na lista, mais seguro para manipulação no Streamlit
+                        lote_key = f"{i}_{lote['validade']}"
+                        lote_options[lote_key] = f"Qtd: {lote['quantidade']} (Vence em {validade_str})"
 
                 if lote_options:
                     # Selectbox com as opções de lote disponíveis
-                    selected_lote_id = st.selectbox(
+                    selected_lote_key = st.selectbox(
                         "Selecione o Lote (Validade):",
                         options=list(lote_options.keys()),
                         format_func=lambda x: lote_options[x],
                         key=f"lote_select_{p['id']}"
                     )
                     
-                    # Quantidade a vender
-                    max_qty = next((l['quantidade'] for l in lotes_data if l['validade'] == selected_lote_id), 1)
+                    # Encontra o lote selecionado e sua quantidade máxima
+                    lote_index, lote_validade_str = selected_lote_key.split('_')
+                    lote_index = int(lote_index)
+                    
+                    max_qty = lotes_data[lote_index].get('quantidade', 1)
+                    
                     qty_sold = st.number_input(
                         "Quantidade a Vender:", 
                         min_value=1, 
@@ -396,14 +432,32 @@ def show_list_products():
                     
                     if st.button(f"Vender {qty_sold}x 💰", key=f"sell_{p['id']}"):
                         try:
-                            mark_produto_as_sold(p['id'], qty_sold, selected_lote_id)
-                            st.success(f"Venda de {qty_sold} unidades de **{p['nome']}** (lote {selected_lote_id}) registrada!")
+                            # 1. Atualiza a quantidade total no DB e registra a transação de venda
+                            mark_produto_as_sold(p['id'], qty_sold)
+                            
+                            # 2. Atualiza a quantidade do lote específico na memória
+                            lotes_data[lote_index]['quantidade'] -= qty_sold
+                            
+                            # 3. Recalcula a nova quantidade total (necessário após a venda)
+                            new_total_quantity = sum(lote['quantidade'] for lote in lotes_data)
+                            
+                            # 4. Salva os lotes atualizados e a nova quantidade total no DB
+                            # Nota: mark_produto_as_sold já atualiza a quantidade total, 
+                            # mas precisamos da update_produto para salvar a lista de lotes corrigida.
+                            update_produto(
+                                p['id'], p['nome'], p['preco'], new_total_quantity, 
+                                p['marca'], p['estilo'], p['tipo'], p['foto'], lotes_data
+                            )
+                            
+                            st.success(f"Venda de {qty_sold} unidades de **{p['nome']}** (lote {lote_validade_str}) registrada!")
                             st.rerun()
                         except ValueError as ve:
                             st.error(f"Erro na Venda: {str(ve)}")
+                        except Exception as e:
+                            st.error(f"Erro Inesperado na Venda: {e}")
                 else:
                     st.warning("Produto sem estoque para venda no momento.")
-                
+            
             st.markdown("---")
             
             # Ações de Administrador (Editar/Excluir)
@@ -464,10 +518,12 @@ def main_app():
             
     # Mostra logo
     try:
-        if os.path.exists("assets/logo.png"):
-             st.sidebar.image("assets/logo.png", width=150)
+        # A constante ASSETS_DIR está definida no database.py
+        logo_path = os.path.join(ASSETS_DIR, "logo.png")
+        if os.path.exists(logo_path):
+              st.sidebar.image(logo_path, width=150)
         else:
-             st.sidebar.info("Coloque a sua logo em assets/logo.png para exibir.")
+              st.sidebar.info("Coloque a sua logo em assets/logo.png para exibir.")
     except Exception:
         pass
 
@@ -493,7 +549,7 @@ def main_app():
     else:
         # Redireciona para login se tentar acessar algo sem permissão
         if not st.session_state['logged_in']:
-              show_login()
+             show_login()
         elif st.session_state['logged_in']:
              # Se logado mas sem página definida, mostra o estoque
              st.session_state['current_page'] = 'list_products'
@@ -504,6 +560,7 @@ def main_app():
 # Inicia a aplicação
 if __name__ == '__main__':
     # Cria o diretório de assets se não existir
+    # A constante ASSETS_DIR vem do database.py (onde está definida)
     if not os.path.exists(ASSETS_DIR):
         os.makedirs(ASSETS_DIR)
     
