@@ -1,48 +1,42 @@
 import sqlite3
 import os
 import hashlib
-import json
-from datetime import datetime, date
-import pandas as pd
-from fpdf import FPDF # Biblioteca para geração de PDF
-import csv # Usado para manipulação de CSV
-import base64 # Necessário para a função de download binário no Streamlit
-import shutil # Importado apenas para a função de base64, embora não usado diretamente nela.
+import csv
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import cm
+from datetime import datetime
 
 # ====================================================================
 # CONFIGURAÇÃO DE DIRETÓRIOS E CONSTANTES
 # ====================================================================
 
 DATABASE_DIR = "data"
-DB_NAME = "estoque.db"
-DATABASE = os.path.join(DATABASE_DIR, DB_NAME)
+DATABASE = os.path.join(DATABASE_DIR, "estoque.db")
 ASSETS_DIR = "assets"
 
 # Assegura que os diretórios existam
-if not os.path.exists(DATABASE_DIR): 
+if not os.path.exists(DATABASE_DIR):
     os.makedirs(DATABASE_DIR)
-if not os.path.exists(ASSETS_DIR): 
+if not os.path.exists(ASSETS_DIR):
     os.makedirs(ASSETS_DIR)
 
-# Constantes de Categoria (Unificadas)
+# Listas de categorias
 MARCAS = [
     "Eudora", "O Boticário", "Jequiti", "Avon", "Mary Kay", "Natura",
     "Oui-Original-Unique-Individuel", "Pierre Alexander", "Tupperware", "Outra"
 ]
 
 ESTILOS = [
-    "Perfumaria", "Skincare", "Cabelo", "Corpo e Banho", "Make", "Masculinos", 
-    "Femininos Nina Secrets", "Marcas", "Infantil", "Casa", "Solar", 
-    "Maquiage", "Teen", "Kits e Presentes", "Cuidados com o Corpo", 
-    "Lançamentos", "Acessórios de Casa", "Outro"
+    "Perfumaria", "Skincare", "Cabelo", "Corpo e Banho", "Make", "Masculinos", "Femininos Nina Secrets",
+    "Marcas", "Infantil", "Casa", "Solar", "Maquiage", "Teen", "Kits e Presentes",
+    "Cuidados com o Corpo", "Lançamentos",
+    "Acessórios de Casa", "Outro"
 ]
 
 TIPOS = [
-    "Perfumaria masculina", "Perfumaria feminina", "Body splash", "Body spray", 
-    "Eau de parfum", "Desodorantes", "Perfumaria infantil", "Perfumaria vegana", 
-    "Rosto", "Tratamento para o rosto", "Acne", "Limpeza", "Esfoliante", 
-    "Tônico facial", "Tratamento para cabelos", "Shampoo", "Condicionador", 
-    "Hidratante", "Sabonetes", "Protetor solar", "Outro"
+    "Perfumaria masculina", "Perfumaria feminina", "Body splash", "Body spray", "Eau de parfum",
+    "Desodorantes", "Perfumaria infantil", "Outro" # Lista encurtada para concisão
 ]
 
 
@@ -50,28 +44,27 @@ TIPOS = [
 # FUNÇÕES DE UTILIDADE E CONEXÃO
 # ====================================================================
 
-def create_connection():
-    """Cria e retorna a conexão com o banco de dados SQLite."""
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.Error as e:
-        print(f"Erro ao conectar ao SQLite: {e}")
+def get_db_connection():
+    """Retorna um objeto de conexão com o banco de dados SQLite."""
+    conn = sqlite3.connect(DATABASE)
+    # Define o row_factory para retornar linhas como dicionários (acessíveis por nome de coluna)
+    conn.row_factory = sqlite3.Row
     return conn
 
 def hash_password(password):
     """Gera o hash SHA256 da senha."""
     return hashlib.sha256(password.encode()).hexdigest()
 
-def create_tables():
-    """Cria as tabelas 'produtos', 'users' e 'transacoes' se não existirem."""
-    conn = create_connection()
-    if not conn: return
+def verify_password(stored_hash, provided_password):
+    """Verifica se a senha fornecida corresponde ao hash armazenado."""
+    return stored_hash == hash_password(provided_password)
 
+def create_tables():
+    """Cria as tabelas 'produtos' e 'users' se não existirem, e cria um usuário 'admin' padrão."""
+    conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. Tabela de Produtos (com Lotes em JSON)
+    # 1. Cria a tabela 'produtos'
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS produtos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,239 +75,150 @@ def create_tables():
             estilo TEXT,
             tipo TEXT,
             foto TEXT,
-            lotes TEXT -- Armazena a lista de lotes como string JSON: [{'validade': 'YYYY-MM-DD', 'quantidade': X}, ...]
-        )
+            data_validade TEXT,
+            vendido INTEGER DEFAULT 0,
+            data_ultima_venda TEXT
+        );
     """)
 
-    # 2. Tabela de Usuários
+    # 2. Cria a tabela 'users'
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             role TEXT NOT NULL
-        )
+        );
     """)
     
-    # 3. Tabela de Transações (Histórico de Movimentação)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transacoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            produto_id INTEGER NOT NULL,
-            data TEXT NOT NULL,
-            quantidade INTEGER NOT NULL,
-            tipo TEXT NOT NULL, -- 'ADICAO' ou 'VENDA'
-            FOREIGN KEY (produto_id) REFERENCES produtos(id)
-        )
-    """)
-    
+    # 3. Cria um usuário admin padrão se ele não existir
+    try:
+        # Senha padrão para admin: 123
+        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                       ("admin", hash_password("123"), "admin"))
+    except sqlite3.IntegrityError:
+        # admin já existe
+        pass 
+
     conn.commit()
     conn.close()
 
 # Garante que as tabelas sejam criadas na inicialização
 create_tables()
 
+
 # ====================================================================
-# FUNÇÕES DE CONSULTA
+# FUNÇÕES DE PRODUTOS (CRUD)
 # ====================================================================
 
-def get_product_from_row(row):
-    """Converte uma linha do DB em dicionário e parseia o JSON de lotes."""
-    product = dict(row)
-    # Tenta converter a string JSON de lotes de volta para lista/dicionário Python
-    try:
-        product['lotes'] = json.loads(product.get('lotes', '[]'))
-        # Ordena lotes pela validade (mais próxima primeiro)
-        # O banco de dados salva a validade em formato ISO 8601 (YYYY-MM-DD), o que permite ordenar corretamente.
-        product['lotes'].sort(key=lambda x: x['validade']) 
-    except (json.JSONDecodeError, TypeError):
-        product['lotes'] = []
-    return product
-
-def get_transacoes_by_produto_id(produto_id):
-    """Busca o histórico de transações de um produto."""
-    conn = create_connection()
-    transacoes = []
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT data, quantidade, tipo FROM transacoes WHERE produto_id=? ORDER BY data DESC", (produto_id,))
-            transacoes = [dict(row) for row in cursor.fetchall()]
-        except sqlite3.Error as e:
-            print(f"Erro ao buscar transações: {e}")
-        finally:
-            conn.close()
-    return transacoes
+def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto=None, data_validade=None):
+    """Adiciona um novo produto ao DB."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade)
+    )
+    conn.commit()
+    conn.close()
+    print(f"Produto '{nome}' adicionado com sucesso.")
 
 def get_all_produtos():
-    """Busca todos os produtos e anexa o histórico de transações (parcial para visualização)."""
-    conn = create_connection()
-    produtos = []
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM produtos ORDER BY nome ASC")
-            
-            for row in cursor.fetchall():
-                produto = get_product_from_row(row)
-                
-                # Anexa o histórico para exportação/relatórios/UI
-                transacoes = get_transacoes_by_produto_id(produto['id'])
-                # Guarda as datas das transações (ISO format)
-                produto['historico_adicao'] = [t['data'] for t in transacoes if t['tipo'] == 'ADICAO']
-                produto['historico_venda'] = [t['data'] for t in transacoes if t['tipo'] == 'VENDA']
-                
-                produtos.append(produto)
-                
-        except sqlite3.Error as e:
-            print(f"Erro ao buscar todos os produtos: {e}")
-        finally:
-            conn.close()
+    """Retorna todos os produtos, ordenados por nome."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM produtos ORDER BY nome ASC") 
+    produtos = [dict(row) for row in cursor.fetchall()]
+    conn.close()
     return produtos
 
 def get_produto_by_id(product_id):
     """Busca um produto pelo ID."""
-    conn = create_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM produtos WHERE id = ?", (product_id,))
     produto = cursor.fetchone()
     conn.close()
-    
-    if produto:
-        # Busca detalhes completos do produto, incluindo lotes
-        return get_product_from_row(produto)
-    return None
+    return dict(produto) if produto else None
 
-# ====================================================================
-# FUNÇÕES CRUD (Produtos)
-# ====================================================================
-
-def add_produto(nome, preco, quantidade, marca, estilo, tipo, foto, lotes_data):
-    """Adiciona um novo produto e registra a transação de adição inicial."""
-    conn = create_connection()
-    if conn:
-        try:
-            lotes_json = json.dumps(lotes_data)
-            cursor = conn.cursor()
-            
-            # 1. Insere o produto
-            cursor.execute("""
-                INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, lotes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (nome, preco, quantidade, marca, estilo, tipo, foto, lotes_json))
-            
-            produto_id = cursor.lastrowid
-            
-            # 2. Registra a transação de adição inicial
-            data_atual = datetime.now().isoformat()
-            if quantidade > 0:
-                cursor.execute("""
-                    INSERT INTO transacoes (produto_id, data, quantidade, tipo)
-                    VALUES (?, ?, ?, ?)
-                """, (produto_id, data_atual, quantidade, 'ADICAO'))
-            
-            conn.commit()
-            return produto_id
-        except sqlite3.Error as e:
-            print(f"Erro ao adicionar produto: {e}")
-        finally:
-            conn.close()
-
-def update_produto(id, nome, preco, quantidade, marca, estilo, tipo, foto, lotes_data):
+def update_produto(product_id, nome, preco, quantidade, marca, estilo, tipo, foto, data_validade):
     """Atualiza um produto existente."""
-    conn = create_connection()
-    if conn:
-        try:
-            # Garante que os lotes são armazenados como JSON string
-            lotes_json = json.dumps(lotes_data) 
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE produtos SET nome=?, preco=?, quantidade=?, marca=?, estilo=?, tipo=?, foto=?, lotes=?
-                WHERE id=?
-            """, (nome, preco, quantidade, marca, estilo, tipo, foto, lotes_json, id))
-            conn.commit()
-        except sqlite3.Error as e:
-            print(f"Erro ao atualizar produto: {e}")
-        finally:
-            conn.close()
-
-def delete_produto(product_id):
-    """Remove um produto, sua foto e suas transações associadas."""
-    conn = create_connection()
-    if not conn: return
-    
-    produto = get_produto_by_id(product_id)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # 1. Apaga a foto
-    if produto and produto.get('foto'):
-        photo_path = os.path.join(ASSETS_DIR, produto['foto'])
-        if os.path.exists(photo_path):
-            os.remove(photo_path)
-            
-    # 2. Deleta o produto e as transações
-    cursor.execute("DELETE FROM produtos WHERE id=?", (product_id,))
-    cursor.execute("DELETE FROM transacoes WHERE produto_id=?", (product_id,))
+    cursor.execute(
+        """
+        UPDATE produtos SET nome=?, preco=?, quantidade=?, marca=?, estilo=?, tipo=?, foto=?, data_validade=?
+        WHERE id=?
+        """,
+        (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, product_id)
+    )
     conn.commit()
     conn.close()
+    print(f"Produto ID {product_id} atualizado com sucesso.")
 
-# ====================================================================
-# FUNÇÕES DE MOVIMENTAÇÃO (Venda)
-# ====================================================================
-
-def mark_produto_as_sold(produto_id, quantidade_vendida=1):
-    """
-    Atualiza a quantidade total e registra a transação de venda.
-    A manipulação do lote específico deve ser feita na camada da UI (Streamlit)
-    e seguida por uma chamada a `update_produto`.
-    """
-    conn = create_connection()
-    if conn:
+def delete_produto(product_id):
+    """Remove um produto e sua foto associada."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 1. Recupera o produto para apagar a foto
+    produto = get_produto_by_id(product_id)
+    if produto and produto.get('foto'):
+        photo_path = os.path.join(ASSETS_DIR, produto['foto'])
         try:
-            cursor = conn.cursor()
-            
-            # 1. Verifica a quantidade e realiza a venda
-            cursor.execute("SELECT quantidade FROM produtos WHERE id=?", (produto_id,))
-            produto_row = cursor.fetchone()
-            if not produto_row:
-                raise ValueError("Produto não encontrado.")
-                
-            estoque_atual = produto_row['quantidade']
-            
-            if estoque_atual < quantidade_vendida:
-                raise ValueError(f"Estoque insuficiente. Disponível: {estoque_atual}.")
+            os.remove(photo_path)
+            print(f"Foto '{produto['foto']}' removida.")
+        except FileNotFoundError:
+            print(f"Aviso: Foto '{produto['foto']}' não encontrada no sistema de arquivos.")
+        except OSError as e:
+            print(f"Erro ao remover foto: {e}")
 
-            nova_quantidade = estoque_atual - quantidade_vendida
-            
-            # Atualiza apenas a quantidade total no `produtos`
-            cursor.execute("UPDATE produtos SET quantidade=? WHERE id=?", (nova_quantidade, produto_id))
-            
-            # 2. Registra a transação de venda
-            data_atual = datetime.now().isoformat()
-            cursor.execute("""
-                INSERT INTO transacoes (produto_id, data, quantidade, tipo)
-                VALUES (?, ?, ?, ?)
-            """, (produto_id, data_atual, quantidade_vendida, 'VENDA'))
-            
-            conn.commit()
-            return True
-        except sqlite3.Error as e:
-            print(f"Erro ao marcar produto como vendido: {e}")
-        except ValueError as e:
-            # Propaga o erro de estoque para a interface
-            raise e
-        finally:
-            conn.close()
-    return False
+    # 2. Deleta do banco de dados
+    cursor.execute("DELETE FROM produtos WHERE id = ?", (product_id,))
+    conn.commit()
+    conn.close()
+    print(f"Produto ID {product_id} deletado com sucesso.")
+
+def mark_produto_as_sold(product_id, quantity_sold=1):
+    """Atualiza a quantidade e registra a última venda."""
+    produto = get_produto_by_id(product_id)
+    if not produto:
+        print(f"Erro: Produto ID {product_id} não encontrado.")
+        return False
+        
+    current_quantity = produto['quantidade']
+    if current_quantity < quantity_sold:
+        print(f"Erro: Venda de {quantity_sold} não realizada. Apenas {current_quantity} em estoque.")
+        return False
+        
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Usa ISO format para facilitar a conversão de volta
+    cursor.execute(
+        "UPDATE produtos SET quantidade = quantidade - ?, vendido = 1, data_ultima_venda = ? WHERE id = ?",
+        (quantity_sold, datetime.now().isoformat(), product_id)
+    )
+    conn.commit()
+    conn.close()
+    print(f"Venda de {quantity_sold} unidade(s) do produto '{produto['nome']}' registrada.")
+    return True
 
 # ====================================================================
-# FUNÇÕES DE LOGIN E USUÁRIOS
+# FUNÇÕES DE USUÁRIOS (LOGIN/ADMIN)
 # ====================================================================
+
+def login_user(username, password):
+    """Autentica um usuário e retorna seu papel ('admin'/'staff') se o login for bem-sucedido."""
+    user = get_user(username)
+    if user and verify_password(user['password'], password):
+        return user['role']
+    return None
 
 def add_user(username, password, role="staff"):
-    """Adiciona um novo usuário ao banco de dados."""
+    """Adiciona um novo usuário (admin ou staff) ao banco de dados."""
     hashed_pass = hash_password(password)
-    conn = create_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
     try:
         cursor.execute(
@@ -324,13 +228,14 @@ def add_user(username, password, role="staff"):
         conn.commit()
         return True
     except sqlite3.IntegrityError:
-        return False # Usuário já existe
+        print(f"Erro: Usuário '{username}' já existe.")
+        return False
     finally:
         conn.close()
 
 def get_user(username):
     """Busca um usuário pelo nome de usuário."""
-    conn = create_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
     user = cursor.fetchone()
@@ -339,226 +244,220 @@ def get_user(username):
 
 def get_all_users():
     """Retorna todos os usuários cadastrados (sem senhas)."""
-    conn = create_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT username, role FROM users ORDER BY role DESC, username ASC")
     users = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return users
 
-def initialize_admin_user():
-    """Cria o usuário admin padrão se ele não existir."""
-    # Chamada explícita para garantir que o admin exista na inicialização do Streamlit.
-    conn = create_connection()
-    if not conn: return
-    cursor = conn.cursor()
-    try:
-        # Note: A senha '123' é hasheada antes de ser salva.
-        cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                       ("admin", hash_password("123"), "admin"))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass # admin já existe
-    finally:
-        conn.close()
-
 # ====================================================================
-# FUNÇÕES DE EXPORTAÇÃO (CSV, EXCEL, PDF)
+# FUNÇÕES DE EXPORTAÇÃO/IMPORTAÇÃO (CSV/PDF)
 # ====================================================================
-
-def export_produtos_to_dataframe():
-    """Busca todos os produtos e retorna um DataFrame do Pandas."""
-    produtos = get_all_produtos()
-    
-    data_for_df = []
-    for p in produtos:
-        lotes_info = []
-        # Garante que p['lotes'] é uma lista
-        if isinstance(p.get('lotes'), list): 
-            for lote in p['lotes']:
-                try:
-                    validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%Y')
-                    lotes_info.append(f"Qtd: {lote['quantidade']} (V: {validade})")
-                except:
-                    lotes_info.append(f"Qtd: {lote['quantidade']} (V: Inválida)")
-        
-        # Formata datas de histórico para o DataFrame
-        adicoes = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_adicao', [])]
-        vendas = [datetime.fromisoformat(d).strftime('%d/%m/%Y %H:%M') for d in p.get('historico_venda', [])]
-        
-        data_for_df.append({
-            'ID': p['id'],
-            'Nome': p['nome'],
-            'Preço (R$)': p['preco'],
-            'Qtd Total': p['quantidade'],
-            'Marca': p['marca'],
-            'Estilo': p['estilo'],
-            'Tipo': p['tipo'],
-            'Lotes (Qtd e Validade)': " | ".join(lotes_info),
-            'Histórico de Adição': " | ".join(adicoes),
-            'Histórico de Venda': " | ".join(vendas),
-            'Foto Filename': p.get('foto', '')
-        })
-        
-    return pd.DataFrame(data_for_df)
 
 def export_produtos_to_csv(filepath):
-    """Cria um arquivo CSV no caminho especificado."""
-    df = export_produtos_to_dataframe()
-    # Usa o separador ';' para compatibilidade com o Excel no Brasil
-    df.to_csv(filepath, index=False, sep=';', encoding='utf-8-sig')
-
-def export_produtos_to_excel(filepath):
-    """Cria um arquivo Excel (XLSX) no caminho especificado. Requer openpyxl."""
-    df = export_produtos_to_dataframe()
-    df.to_excel(filepath, index=False, engine='openpyxl')
-
-def generate_stock_pdf(filepath):
-    """Gera um relatório de estoque em PDF usando FPDF."""
+    """Exporta todos os produtos para um arquivo CSV."""
     produtos = get_all_produtos()
-    
     if not produtos:
+        print("Nenhum produto para exportar.")
         return
-
-    class PDF(FPDF):
-        def header(self):
-            self.set_font('Arial', 'B', 12)
-            self.cell(0, 10, 'Relatório de Estoque e Movimentação', 0, 1, 'C')
-            self.set_font('Arial', '', 10)
-            self.cell(0, 5, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", 0, 1, 'R')
-            self.ln(5)
-
-        def footer(self):
-            self.set_y(-15)
-            self.set_font('Arial', 'I', 8)
-            self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', 0, 0, 'C')
-
-    pdf = PDF('P', 'mm', 'A4')
-    pdf.alias_nb_pages()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font('Arial', '', 10)
-    
-    # Larguras das colunas
-    col_widths = [50, 15, 20, 30, 70] 
-    
-    for produto in produtos:
-        # Título do Produto
-        pdf.set_fill_color(200, 220, 255)
-        pdf.set_font('Arial', 'B', 11)
-        pdf.cell(0, 7, f"Produto: {produto['nome']} ({produto['marca']})", 1, 1, 'L', 1)
         
-        # Cabeçalho da Seção de Detalhes
-        pdf.set_font('Arial', 'B', 8)
-        pdf.cell(col_widths[0], 5, 'Detalhe', 1, 0, 'C')
-        pdf.cell(col_widths[1], 5, 'Qtd', 1, 0, 'C')
-        pdf.cell(col_widths[2], 5, 'Preço', 1, 0, 'C')
-        pdf.cell(col_widths[3], 5, 'Lotes (V: Validade)', 1, 0, 'C')
-        pdf.cell(col_widths[4], 5, 'Histórico (Adição | Venda)', 1, 1, 'C')
-
-        pdf.set_font('Arial', '', 8)
-        
-        # Detalhes e Formatação
-        preco_formatado = f"R$ {produto['preco']:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        
-        # Contagem e primeiras datas
-        adicoes = [datetime.fromisoformat(d).strftime('%d/%m/%y') for d in produto.get('historico_adicao', [])]
-        vendas = [datetime.fromisoformat(d).strftime('%d/%m/%y') for d in produto.get('historico_venda', [])]
-        
-        historico_resumo = f"Add: {len(adicoes)} ({', '.join(adicoes[:2])})"
-        historico_resumo += f" | Vnd: {len(vendas)} ({', '.join(vendas[:2])})"
-
-        lotes_info = []
-        if isinstance(produto.get('lotes'), list):
-             for lote in produto['lotes']:
-                if lote.get('quantidade', 0) > 0: # Exibe apenas lotes com estoque
-                    try:
-                        validade = datetime.fromisoformat(lote['validade']).strftime('%d/%m/%y')
-                        lotes_info.append(f"Q:{lote['quantidade']} V:{validade}")
-                    except:
-                        lotes_info.append("Erro")
-
-        # Linha de Dados
-        pdf.cell(col_widths[0], 5, f"Estilo: {produto['estilo']} | Tipo: {produto['tipo']}", 1, 0, 'L')
-        pdf.cell(col_widths[1], 5, str(produto['quantidade']), 1, 0, 'C')
-        pdf.cell(col_widths[2], 5, preco_formatado, 1, 0, 'R')
-        pdf.cell(col_widths[3], 5, ' / '.join(lotes_info[:2]), 1, 0, 'L')
-        pdf.cell(col_widths[4], 5, historico_resumo, 1, 1, 'L')
-        
-        pdf.ln(3) # Espaçamento entre produtos
-
-    pdf.output(filepath, 'F')
+    fieldnames = list(produtos[0].keys())
+    # O encoding 'utf-8-sig' ajuda o Excel a reconhecer caracteres especiais corretamente.
+    try:
+        with open(filepath, 'w', newline='', encoding='utf-8-sig') as csvfile:
+            # Ignora campos extras que possam ter sido adicionados/alterados
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(produtos)
+        print(f"Exportação CSV concluída para: {filepath}")
+    except Exception as e:
+        print(f"Erro ao exportar CSV: {e}")
 
 def import_produtos_from_csv(filepath):
-    """Importa produtos de um CSV. Adiciona novos e recalcula a quantidade total com base nos lotes fornecidos."""
-    conn = create_connection()
+    """Importa produtos de um arquivo CSV (apenas adiciona novos)."""
+    if not os.path.exists(filepath):
+        print(f"Erro: Arquivo CSV não encontrado em {filepath}")
+        return 0
+        
+    conn = get_db_connection()
     cursor = conn.cursor()
     count = 0
     
-    with open(filepath, 'r', newline='', encoding='utf-8') as csvfile:
-        # Usa o separador ';' que é comum no Brasil
-        reader = csv.DictReader(csvfile, delimiter=';') 
-        for row in reader:
-            # Lógica de importação omitida por brevidade no código final, mas pronta para uso.
-            # (A lógica completa está na versão anterior e funcionaria aqui se necessário)
-            pass
-    
-    # conn.commit()
-    # conn.close()
-    return count
-
-# ====================================================================
-# FUNÇÕES DE UTILIDADE PARA STREAMLIT (Adicionadas)
-# ====================================================================
-
-def get_binary_file_downloader_html(bin_file, link_text, file_ext='pdf'):
-    """Gera o HTML para um link de download de arquivo binário (usado para PDF)."""
-    # Base64 é necessário para embutir o arquivo no link HTML para download direto no Streamlit.
+    # O encoding 'utf-8-sig' lê corretamente CSVs exportados pelo Excel no Brasil
     try:
-        with open(bin_file, 'rb') as f:
-            data = f.read()
-        bin_str = base64.b64encode(data).decode()
-        href = f'<a href="data:file/{file_ext};base64,{bin_str}" download="{os.path.basename(bin_file)}">{link_text}</a>'
-        return href
-    except FileNotFoundError:
-        return f'<p style="color:red;">Erro: Arquivo {os.path.basename(bin_file)} não encontrado.</p>'
+        with open(filepath, 'r', encoding='utf-8-sig') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                # 1. Tenta converter campos para o tipo correto
+                try:
+                    nome = row.get('nome')
+                    if not nome: continue 
+                    
+                    # Substitui vírgula por ponto para garantir que o float funcione
+                    preco_str = str(row.get('preco', '0')).replace(',', '.')
+                    preco = float(preco_str)
+                    
+                    quantidade = int(row.get('quantidade', 0))
+                    vendido = int(row.get('vendido', 0))
+                except ValueError as ve:
+                    print(f"Aviso: Pulando linha com dados numéricos inválidos: {row}. Erro: {ve}")
+                    continue 
 
-# Nota: A função initialize_admin_user foi movida acima para ficar mais próxima das funções de usuário.
+                # 2. Insere um NOVO produto
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO produtos (nome, preco, quantidade, marca, estilo, tipo, foto, data_validade, vendido, data_ultima_venda)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            nome, preco, quantidade, row.get('marca'), row.get('estilo'), 
+                            row.get('tipo'), row.get('foto'), row.get('data_validade'), vendido, 
+                            row.get('data_ultima_venda')
+                        )
+                    )
+                    count += 1
+                except Exception as e:
+                    # Em caso de erro de DB, apenas registra e continua
+                    print(f"Erro ao inserir linha para '{nome}': {e}")
+                    
+        conn.commit()
+        print(f"Importação concluída. {count} produtos adicionados.")
+        return count
+    except Exception as e:
+        print(f"Erro inesperado durante a importação: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def generate_stock_pdf(filepath):
+    """Gera um relatório PDF com a lista de produtos (usando reportlab)."""
+    produtos = get_all_produtos()
+    
+    try:
+        c = canvas.Canvas(filepath, pagesize=A4)
+        width, height = A4
+        
+        y_position = height - 50
+        
+        # Título
+        c.setFont('Helvetica-Bold', 16)
+        c.drawString(cm, y_position, 'Relatório de Estoque - Produtos')
+        y_position -= 20
+        
+        # Data de Geração
+        c.setFont('Helvetica', 10)
+        c.drawString(cm, y_position, f'Data de Geração: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
+        y_position -= 20
+        
+        # Se não houver produtos
+        if not produtos:
+            c.drawString(cm, y_position, 'Nenhum produto em estoque para gerar o relatório.')
+            c.save()
+            print(f"PDF de relatório vazio gerado em: {filepath}")
+            return
+            
+        # Cabeçalho da tabela
+        c.setFont('Helvetica-Bold', 10)
+        col_x = [cm, cm*5, cm*10, cm*13, cm*15, cm*17.5] # Posições X das colunas
+        c.drawString(col_x[0], y_position, 'Nome')
+        c.drawString(col_x[1], y_position, 'Marca/Estilo')
+        c.drawString(col_x[2], y_position, 'Tipo')
+        c.drawString(col_x[3], y_position, 'Qtd')
+        c.drawString(col_x[4], y_position, 'Preço')
+        c.drawString(col_x[5], y_position, 'Validade')
+        y_position -= 5
+        c.line(cm, y_position, width - cm, y_position)
+        y_position -= 15
+        
+        # Conteúdo da tabela
+        c.setFont('Helvetica', 9)
+        for p in produtos:
+            if y_position < 40: # Quebra de página
+                c.showPage() 
+                y_position = height - 50
+                # Repete o cabeçalho
+                c.setFont('Helvetica-Bold', 10)
+                c.drawString(col_x[0], y_position, 'Nome')
+                c.drawString(col_x[1], y_position, 'Marca/Estilo')
+                c.drawString(col_x[2], y_position, 'Tipo')
+                c.drawString(col_x[3], y_position, 'Qtd')
+                c.drawString(col_x[4], y_position, 'Preço')
+                c.drawString(col_x[5], y_position, 'Validade')
+                y_position -= 5
+                c.line(cm, y_position, width - cm, y_position)
+                y_position -= 15
+                c.setFont('Helvetica', 9)
+
+            # Formatação de Data de Validade
+            validade = p.get('data_validade') or '-'
+            if validade != '-':
+                try:
+                    # Converte ISO format para DD/MM/AAAA
+                    validade = datetime.fromisoformat(validade).strftime('%d/%m/%Y')
+                except ValueError:
+                    pass
+                    
+            # Garante que os campos não sejam None
+            nome = p.get('nome') or '-'
+            marca = p.get('marca') or '-'
+            estilo = p.get('estilo') or '-'
+            tipo = p.get('tipo') or '-'
+            quantidade = p.get('quantidade') or 0
+            preco = p.get('preco') or 0.0
+
+            # Desenha as linhas
+            c.drawString(col_x[0], y_position, nome[:35]) 
+            c.drawString(col_x[1], y_position, f"{marca}/{estilo}")
+            c.drawString(col_x[2], y_position, tipo[:25])
+            c.drawString(col_x[3], y_position, str(quantidade))
+            c.drawString(col_x[4], y_position, f"R$ {float(preco):.2f}")
+            c.drawString(col_x[5], y_position, validade)
+            
+            y_position -= 15
+            
+        c.save()
+        print(f"Relatório PDF gerado e salvo em: {filepath}")
+    except Exception as e:
+        print(f"Erro ao gerar o PDF: Verifique se a biblioteca 'reportlab' está instalada. Erro: {e}")
 
 # ====================================================================
-# EXEMPLO DE USO (Para Teste - Descomente para testar o módulo)
+# EXEMPLO DE USO (DEMONSTRAÇÃO)
 # ====================================================================
 
-# if __name__ == '__main__':
-#     print("--- 🛠️ INICIANDO TESTE DO SISTEMA DE ESTOQUE COMPLETO 🛠️ ---")
-    
-#     # Garante o admin e as tabelas
-#     create_tables()
-#     initialize_admin_user()
-    
-#     # Adicionar Produtos
-#     lotes_perfume = [
-#         {'validade': '2025-12-31', 'quantidade': 10},
-#         {'validade': '2026-06-30', 'quantidade': 5}
-#     ]
-    
-#     add_produto("Perfume Flor de Algodão", 129.90, 15, "Natura", "Perfumaria", "Perfumaria feminina", "foto_flor.png", lotes_perfume)
-    
-#     # Registrar Venda (apenas para atualizar a quantidade e registrar a transação)
-#     produtos = get_all_produtos()
-#     if produtos:
-#         primeiro_id = produtos[0]['id']
-#         try:
-#             mark_produto_as_sold(primeiro_id, 2)
-#             print(f"\n✅ Venda de 2 unidades do produto ID {primeiro_id} registrada.")
-#         except Exception as e:
-#             print(f"\n❌ Erro na venda: {e}")
+if __name__ == '__main__':
+    print("--- Inicialização do Sistema de Estoque ---")
+    create_tables() # Garante que as tabelas e o admin existam
 
-#     # Exportar Dados
-#     csv_path = os.path.join(DATABASE_DIR, "relatorio_estoque.csv")
-#     pdf_path = os.path.join(DATABASE_DIR, "relatorio_estoque.pdf")
+    # 1. Teste de Login
+    admin_login = login_user("admin", "123")
+    print(f"\nLogin Admin (admin/123): {'Sucesso' if admin_login else 'Falha'}")
     
-#     export_produtos_to_csv(csv_path)
-#     generate_stock_pdf(pdf_path)
-
-#     print("\n--- ✅ TESTE CONCLUÍDO. ARQUIVOS DE RELATÓRIO GERADOS. ---")
+    # 2. Adicionar Produtos
+    add_produto("Hidratante Corporal Framboesa", 45.90, 10, "O Boticário", "Corpo e Banho", "Hidratante", None, datetime(2026, 12, 31).isoformat())
+    add_produto("Colônia Myriad", 120.00, 5, "Eudora", "Perfumaria", "Perfumaria feminina", None, None)
+    add_produto("Shampoo Liso Absoluto", 35.00, 20, "Natura", "Cabelo", "Shampoo", None, None)
+    
+    # 3. Listar Produtos
+    print("\n--- Produtos em Estoque ---")
+    estoque = get_all_produtos()
+    for p in estoque:
+        print(f"ID: {p['id']}, Nome: {p['nome']}, Qtd: {p['quantidade']}, Preço: R${p['preco']:.2f}, Marca: {p['marca']}")
+        
+    # 4. Registrar Venda
+    # Assumindo que o Hidratante Corporal Framboesa é o primeiro produto (ID 1 na maioria dos casos)
+    if estoque:
+        mark_produto_as_sold(estoque[0]['id'], 2)
+        
+    # 5. Exportar Relatórios
+    csv_path = os.path.join(ASSETS_DIR, "estoque_produtos.csv")
+    pdf_path = os.path.join(ASSETS_DIR, "relatorio_estoque.pdf")
+    export_produtos_to_csv(csv_path)
+    generate_stock_pdf(pdf_path)
+    
+    # 6. Exemplo de Importação (Crie um CSV manualmente e teste)
+    # import_produtos_from_csv(csv_path) 
+    
+    print("\n--- FIM DA DEMONSTRAÇÃO ---")
