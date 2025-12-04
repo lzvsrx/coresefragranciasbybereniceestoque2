@@ -13,7 +13,7 @@ import json # Necessário para debug ou manipulação de lotes no frontend
 
 # Ajuste este import se seu arquivo for 'utils/database.py'
 try:
-    from database import (
+    from utilits.database import (
         get_user, hash_password, add_user, get_all_users, 
         add_produto, get_all_produtos, get_produto_by_id, 
         update_produto, delete_produto, mark_produto_as_sold, 
