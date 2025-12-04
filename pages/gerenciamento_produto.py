@@ -1,3 +1,97 @@
+O código da função load_css será adicionado ao início do arquivo pages/1_Gerenciar_Produtos.py para garantir que o estilo personalizado seja carregado na página de gerenciamento.
+
+Abaixo está o código completo e atualizado de todos os arquivos do Streamlit (app.py e os arquivos da pasta pages), seguindo a estrutura que você já tem, com a função load_css devidamente inserida no pages/1_Gerenciar_Produtos.py.
+
+A estrutura do seu projeto continua a mesma:
+
+.
+├── app.py
+├── pages/
+│   ├── 1_Gerenciar_Produtos.py <-- Código MODIFICADO
+│   ├── 2_Estoque_Completo.py
+│   ├── 3_Produtos_Vendidos.py
+│   ├── 4_Area_Administrativa.py
+│   └── 5_Chatbot_Estoque.py
+└── utils/
+    ├── database.py <-- SEM ALTERAÇÕES (Usando o código fornecido anteriormente)
+    └── __init__.py
+# ... e demais pastas: assets/, data/, style.css
+1. 📄 app.py (Página Inicial)
+Python
+
+# ====================================================================
+# ARQUIVO: app.py
+# Página principal e configurações iniciais do Streamlit.
+# ====================================================================
+import streamlit as st
+import os
+from utils.database import create_tables
+
+# Configurações Iniciais
+st.set_page_config(
+    page_title="Cores e Fragrâncias by Berenice",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Inicializa as tabelas do DB (garante que existem)
+create_tables()
+
+# Inicialização do estado de sessão para Login
+if "logged_in" not in st.session_state: st.session_state["logged_in"] = False
+if "username" not in st.session_state: st.session_state["username"] = ""
+if "role" not in st.session_state: st.session_state["role"] = "guest"
+
+# Função para carregar CSS (para a página inicial)
+def load_css(file_name="style.css"):
+    """Carrega e aplica o CSS personalizado, forçando a codificação UTF-8."""
+    if os.path.exists(file_name):
+        with open(file_name, encoding='utf-8') as f: 
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    
+load_css()
+
+# --- Conteúdo da Página Inicial ---
+st.title("🌸 Cores e Fragrâncias by Berenice 🌸")
+st.markdown("---")
+
+st.markdown("""
+Este é o aplicativo para **gerenciamento de estoque** da loja, construído com Streamlit e SQLite.
+
+### 🧭 Navegação
+Use o menu lateral (ícone das páginas do Streamlit) para acessar as diferentes áreas:
+* **Gerenciar Produtos:** Cadastro, Edição, Remoção, Venda e Relatórios (Requer Login).
+* **Estoque Completo:** Visualização geral do estoque.
+* **Produtos Vendidos:** Histórico de itens vendidos.
+* **Área Administrativa:** Login e Cadastro de novos usuários.
+""")
+
+# Mostra logo (verifique assets/logo.png)
+try:
+    if os.path.exists("assets/logo.png"):
+        st.image("assets/logo.png", width=250)
+    else:
+         st.info("Coloque a sua logo em assets/logo.png para exibir aqui.")
+except Exception:
+     pass
+
+# Botão de Logout (mostrado no sidebar se estiver logado)
+if st.session_state["logged_in"]:
+    st.sidebar.success(f"Logado como: **{st.session_state['username']}** ({st.session_state['role']})")
+    if st.sidebar.button("Sair"):
+        st.session_state["logged_in"] = False
+        st.session_state["username"] = ""
+        st.session_state["role"] = "guest"
+        st.rerun()
+2. 📄 pages/1_Gerenciar_Produtos.py (Código Atualizado)
+A função load_css foi adicionada e chamada no início deste arquivo.
+
+Python
+
+# ====================================================================
+# ARQUIVO: pages/1_Gerenciar_Produtos.py
+# Lógica de CRUD, Venda, Importação e Exportação (Requer Login).
+# ====================================================================
 import streamlit as st
 import os
 from datetime import datetime, date
@@ -7,6 +101,17 @@ from utils.database import (
     mark_produto_as_sold,
     MARCAS, ESTILOS, TIPOS, ASSETS_DIR
 )
+
+# --- FUNÇÃO CSS ADICIONADA ---
+def load_css(file_name="style.css"):
+    """Carrega e aplica o CSS personalizado, forçando a codificação UTF-8."""
+    if os.path.exists(file_name):
+        with open(file_name, encoding='utf-8') as f: 
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+
+# Chama o CSS para esta página
+load_css()
+# -----------------------------
 
 # --- Verificação de Login ---
 if not st.session_state.get("logged_in"):
@@ -91,10 +196,6 @@ def add_product_form():
 # -------------------------------------------------------------------
 # FUNÇÃO DE EDIÇÃO 
 # -------------------------------------------------------------------
-def load_css(file_name="style.css"):
-    if os.path.exists(file_name):
-        with open(file_name, encoding='utf-8') as f: 
-            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 def show_edit_form():
     """Exibe o formulário de edição para o produto selecionado."""
     produto_id = st.session_state.get('edit_product_id')
@@ -338,4 +439,3 @@ else:
         add_product_form()
     else:
         manage_products_list_actions()
-
